@@ -1,0 +1,294 @@
+# Tektronix / Keithley SMU 8-Model Hardware Specification & SOA Profile Database (v3.0)
+# Covers Phase 1 (Safety & Limits), Phase 2 (TSP-Link, Channels, Combining), Phase 3 (Pulse/Digitizer & SOA)
+
+models:
+  "2450":
+    family: "24xx"
+    display_name: "Keithley 2450 SourceMeter"
+    channels: 1
+    channel_names: ["smu"]
+    native_languages: ["SCPI", "TSP", "SCPI2400"]
+    default_factory_lang: "SCPI"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 200.0
+    max_dc_current_a: 1.05
+    max_dc_power_w: 20.0
+    max_pulse_voltage_v: 200.0
+    max_pulse_current_a: 1.05
+    max_pulse_power_w: 20.0
+    min_pulse_width_s: 0.002
+    max_duty_cycle: 1.0
+    min_nplc: 0.01
+    max_nplc: 10.0
+    max_buffer_points: 1000000
+    has_digitizer: false
+    max_digitizer_rate_sps: 0
+    has_dedicated_pulser: false
+    has_contact_check: false
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    output_off_modes: ["NORM", "HIMP", "ZERO", "GUAR"]
+    soa_envelopes:
+      - {max_v: 21.0, max_i: 1.05, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 210.0, max_i: 0.105, mode: "DC", max_pw_s: null, max_duty: 1.0}
+
+  "2460":
+    family: "24xx"
+    display_name: "Keithley 2460 High-Current SourceMeter"
+    channels: 1
+    channel_names: ["smu"]
+    native_languages: ["SCPI", "TSP", "SCPI2400"]
+    default_factory_lang: "SCPI"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 105.0
+    max_dc_current_a: 7.35
+    max_dc_power_w: 100.0
+    max_pulse_voltage_v: 105.0
+    max_pulse_current_a: 7.35
+    max_pulse_power_w: 100.0
+    min_pulse_width_s: 0.002
+    max_duty_cycle: 1.0
+    min_nplc: 0.01
+    max_nplc: 10.0
+    max_buffer_points: 1000000
+    has_digitizer: false
+    max_digitizer_rate_sps: 0
+    has_dedicated_pulser: false
+    has_contact_check: false
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    output_off_modes: ["NORM", "HIMP", "ZERO", "GUAR"]
+    soa_envelopes:
+      - {max_v: 7.0, max_i: 7.35, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 20.0, max_i: 5.0, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 105.0, max_i: 1.05, mode: "DC", max_pw_s: null, max_duty: 1.0}
+
+  "2461":
+    family: "24xx"
+    display_name: "Keithley 2461 High-Current Pulse SourceMeter"
+    channels: 1
+    channel_names: ["smu"]
+    native_languages: ["SCPI", "TSP", "SCPI2400"]
+    default_factory_lang: "SCPI"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 105.0
+    max_dc_current_a: 7.35
+    max_dc_power_w: 100.0
+    max_pulse_voltage_v: 100.0
+    max_pulse_current_a: 10.5
+    max_pulse_power_w: 1000.0
+    min_pulse_width_s: 0.00015
+    max_duty_cycle: 0.05
+    min_nplc: 0.01
+    max_nplc: 10.0
+    max_buffer_points: 1000000
+    has_digitizer: true
+    max_digitizer_rate_sps: 1000000
+    has_dedicated_pulser: true
+    has_contact_check: true
+    has_acal: true
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    output_off_modes: ["NORM", "HIMP", "ZERO", "GUAR"]
+    soa_envelopes:
+      - {max_v: 7.0, max_i: 7.35, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 20.0, max_i: 5.0, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 105.0, max_i: 1.05, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 100.0, max_i: 10.5, mode: "PULSE", max_pw_s: 0.003, max_duty: 0.05}
+
+  "2470":
+    family: "24xx"
+    display_name: "Keithley 2470 High-Voltage SourceMeter"
+    channels: 1
+    channel_names: ["smu"]
+    native_languages: ["SCPI", "TSP", "SCPI2400"]
+    default_factory_lang: "SCPI"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 1100.0
+    max_dc_current_a: 1.05
+    max_dc_power_w: 20.0
+    max_pulse_voltage_v: 1100.0
+    max_pulse_current_a: 1.05
+    max_pulse_power_w: 20.0
+    min_pulse_width_s: 0.002
+    max_duty_cycle: 1.0
+    min_nplc: 0.01
+    max_nplc: 10.0
+    max_buffer_points: 1000000
+    has_digitizer: false
+    max_digitizer_rate_sps: 0
+    has_dedicated_pulser: false
+    has_contact_check: false
+    has_acal: false
+    has_breakdown_protection: true
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    output_off_modes: ["NORM", "HIMP", "ZERO", "GUAR"]
+    soa_envelopes:
+      - {max_v: 21.0, max_i: 1.05, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 210.0, max_i: 0.105, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 1100.0, max_i: 0.021, mode: "DC", max_pw_s: null, max_duty: 1.0}
+
+  "2600B":
+    family: "26xx"
+    display_name: "Keithley 2600B Series System SourceMeter (2602B/2612B/2636B)"
+    channels: 2
+    channel_names: ["smua", "smub"]
+    native_languages: ["TSP"]
+    default_factory_lang: "TSP"
+    tsplink_supported: true
+    non_tsplink_variants: ["2604B", "2614B", "2634B"]
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 200.0
+    max_dc_current_a: 3.03
+    max_dc_power_w: 40.4
+    max_pulse_voltage_v: 40.0
+    max_pulse_current_a: 10.1
+    max_pulse_power_w: 200.0
+    min_pulse_width_s: 0.0001
+    max_duty_cycle: 0.02
+    min_nplc: 0.001
+    max_nplc: 25.0
+    max_buffer_points: 140000
+    has_digitizer: false
+    max_digitizer_rate_sps: 0
+    has_dedicated_pulser: false
+    has_contact_check: true
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    negative_zero_bias_fix: true
+    output_off_modes: ["OUTPUT_NORMAL", "OUTPUT_HIGH_Z", "OUTPUT_ZERO"]
+    soa_envelopes:
+      - {max_v: 6.0, max_i: 3.03, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 40.4, max_i: 1.01, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 202.0, max_i: 0.101, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 20.0, max_i: 10.1, mode: "PULSE", max_pw_s: 0.0018, max_duty: 0.01}
+
+  "2601B-PULSE":
+    family: "26xx"
+    display_name: "Keithley 2601B-PULSE System SourceMeter (10us Pulser)"
+    channels: 1
+    channel_names: ["smua"]
+    native_languages: ["TSP"]
+    default_factory_lang: "TSP"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 40.4
+    max_dc_current_a: 3.03
+    max_dc_power_w: 40.4
+    max_pulse_voltage_v: 10.0
+    max_pulse_current_a: 10.0
+    max_pulse_power_w: 100.0
+    min_pulse_width_s: 0.00001
+    max_duty_cycle: 0.10
+    min_nplc: 0.001
+    max_nplc: 25.0
+    max_buffer_points: 140000
+    max_pulser_burst_points: 3500
+    max_pulser_rate_metric: 33000
+    has_digitizer: true
+    max_digitizer_rate_sps: 1000000
+    has_dedicated_pulser: true
+    has_contact_check: true
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    negative_zero_bias_fix: true
+    output_off_modes: ["OUTPUT_NORMAL", "OUTPUT_HIGH_Z", "OUTPUT_ZERO"]
+    soa_envelopes:
+      - {max_v: 6.0, max_i: 3.03, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 40.4, max_i: 1.01, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 10.0, max_i: 10.0, mode: "PULSE", max_pw_s: 0.0002, max_duty: 0.10}
+
+  "2606B":
+    family: "26xx"
+    display_name: "Keithley 2606B 4-Channel High-Density System SourceMeter"
+    channels: 4
+    channel_names: ["node[1].smua", "node[1].smub", "node[2].smua", "node[2].smub"]
+    native_languages: ["TSP"]
+    default_factory_lang: "TSP"
+    tsplink_supported: true
+    combining_supported: false
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 20.2
+    max_dc_current_a: 3.03
+    max_dc_power_w: 20.2
+    max_pulse_voltage_v: 20.2
+    max_pulse_current_a: 3.03
+    max_pulse_power_w: 20.2
+    min_pulse_width_s: 0.0002
+    max_duty_cycle: 1.0
+    min_nplc: 0.001
+    max_nplc: 25.0
+    max_buffer_points: 140000
+    has_digitizer: false
+    max_digitizer_rate_sps: 0
+    has_dedicated_pulser: false
+    has_contact_check: true
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    negative_zero_bias_fix: true
+    output_off_modes: ["OUTPUT_NORMAL", "OUTPUT_HIGH_Z", "OUTPUT_ZERO"]
+    soa_envelopes:
+      - {max_v: 1.0, max_i: 3.03, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 6.0, max_i: 3.03, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 20.2, max_i: 1.01, mode: "DC", max_pw_s: null, max_duty: 1.0}
+
+  "2651A":
+    family: "26xx"
+    display_name: "Keithley 2651A High-Power System SourceMeter"
+    channels: 1
+    channel_names: ["smua"]
+    native_languages: ["TSP"]
+    default_factory_lang: "TSP"
+    tsplink_supported: true
+    combining_supported: true
+    interlock_threshold_v: 42.0
+    max_dc_voltage_v: 40.4
+    max_dc_current_a: 20.2
+    max_dc_power_w: 200.0
+    max_pulse_voltage_v: 40.0
+    max_pulse_current_a: 50.0
+    max_pulse_power_w: 2000.0
+    min_pulse_width_s: 0.0003
+    max_duty_cycle: 0.01
+    min_nplc: 0.001
+    max_nplc: 25.0
+    max_buffer_points: 140000
+    has_digitizer: true
+    max_digitizer_rate_sps: 1000000
+    has_dedicated_pulser: true
+    has_contact_check: true
+    has_acal: false
+    has_breakdown_protection: false
+    has_high_cap_mode: true
+    has_offset_comp_ohms: true
+    has_sink_mode: true
+    negative_zero_bias_fix: true
+    output_off_modes: ["OUTPUT_NORMAL", "OUTPUT_HIGH_Z", "OUTPUT_ZERO"]
+    soa_envelopes:
+      - {max_v: 10.0, max_i: 20.2, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 20.0, max_i: 10.1, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 40.4, max_i: 5.05, mode: "DC", max_pw_s: null, max_duty: 1.0}
+      - {max_v: 40.0, max_i: 50.0, mode: "PULSE", max_pw_s: 0.0003, max_duty: 0.01}
+      - {max_v: 40.0, max_i: 20.0, mode: "PULSE", max_pw_s: 0.010, max_duty: 0.10}

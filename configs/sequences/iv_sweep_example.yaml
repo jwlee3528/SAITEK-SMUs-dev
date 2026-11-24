@@ -1,0 +1,28 @@
+# Measurement Sequence Recipe Example (I-V Sweep & Analysis)
+sequence_name: "diode_forward_iv_sweep"
+target_instrument: "smu_main"
+feature: "sweep"
+
+parameters:
+  source_function: "VOLT"
+  measure_function: "CURR"
+  sweep_type: "LINEAR"                 # LINEAR, LOG, DUAL, LIST
+  start_v: 0.0
+  stop_v: 5.0
+  points: 101
+  delay_s: 0.01
+  nplc: 1.0
+  compliance_a: 0.1
+  auto_range: true
+  buffer_name: "defbuffer1"
+
+analysis:
+  calculate_differential_resistance: true
+  extract_threshold_voltage: true
+  filter_outliers: false
+
+storage:
+  formats: ["csv", "hdf5"]
+  output_dir: "data/processed"
+  save_raw_buffer: true
+  generate_plot: true
