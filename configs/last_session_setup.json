@@ -1,0 +1,318 @@
+{
+  "version": "3.0",
+  "export_dir": "F:\\02.Project\\08. SAITEK SMU SW dev\\data\\processed",
+  "model": "2450",
+  "variant": "2450",
+  "node_count": 1,
+  "dut_type": "RESISTOR_1K",
+  "interlock_engaged": true,
+  "channel_config": {
+    "source_func": "VOLTAGE",
+    "measure_func": "CURRENT",
+    "compliance_limit": 0.1,
+    "nplc": 0.1,
+    "sense_mode": "2WIRE",
+    "output_off_mode": "NORMAL",
+    "contact_check_enabled": false
+  },
+  "recipe": {
+    "name": "2450_linear",
+    "sweep_type": "LINEAR",
+    "source_func": "VOLTAGE",
+    "measure_func": "CURRENT",
+    "start_level": 0.0,
+    "stop_level": 1.2,
+    "points": 100,
+    "delay_s": 0.005,
+    "compliance_limit": 0.1,
+    "nplc": 0.1,
+    "repeat_mode": "SINGLE",
+    "repeat_count": 1,
+    "end_Return_to_bias": true,
+    "apply_negative_zero_fix": true,
+    "custom_steps": [
+      {
+        "step_index": 1,
+        "duration_s": 0.005,
+        "level": 0.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 2,
+        "duration_s": 0.005,
+        "level": 0.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 3,
+        "duration_s": 0.005,
+        "level": 0.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 4,
+        "duration_s": 0.005,
+        "level": 0.3,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 5,
+        "duration_s": 0.005,
+        "level": 0.4,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 6,
+        "duration_s": 0.005,
+        "level": 0.5,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 7,
+        "duration_s": 0.005,
+        "level": 0.6,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 8,
+        "duration_s": 0.005,
+        "level": 0.7,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 9,
+        "duration_s": 0.005,
+        "level": 0.8,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 10,
+        "duration_s": 0.005,
+        "level": 0.9,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 11,
+        "duration_s": 0.005,
+        "level": 1.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 12,
+        "duration_s": 0.005,
+        "level": 1.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 13,
+        "duration_s": 0.005,
+        "level": 1.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 14,
+        "duration_s": 0.005,
+        "level": 1.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 15,
+        "duration_s": 0.005,
+        "level": 1.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 16,
+        "duration_s": 0.005,
+        "level": 0.9,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 17,
+        "duration_s": 0.005,
+        "level": 0.8,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 18,
+        "duration_s": 0.005,
+        "level": 0.7,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 19,
+        "duration_s": 0.005,
+        "level": 0.6,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 20,
+        "duration_s": 0.005,
+        "level": 0.5,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 21,
+        "duration_s": 0.005,
+        "level": 0.4,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 22,
+        "duration_s": 0.005,
+        "level": 0.3,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 23,
+        "duration_s": 0.005,
+        "level": 0.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 24,
+        "duration_s": 0.005,
+        "level": 0.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 25,
+        "duration_s": 0.005,
+        "level": 0.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      }
+    ]
+  },
+  "pulse_config": {
+    "bias_level": 0.0,
+    "pulse_level": 1.2,
+    "pulse_width_s": 0.002,
+    "pulse_period_s": 0.01,
+    "pulse_count": 1,
+    "digitize_enable": true,
+    "sample_rate_sps": 1000000,
+    "aperture_s": 1e-06,
+    "pre_trigger_samples": 20,
+    "post_trigger_samples": 40,
+    "load_inductance_uh": 0.5,
+    "fast_adc_mode": true,
+    "sink_mode_enable": false,
+    "ambient_temp_c": 25.0,
+    "last_acal_temp_c": 23.0
+  },
+  "logical_channels": [
+    {
+      "node_id": 1,
+      "channel_name": "smu",
+      "role": "PARALLEL_DUT",
+      "enabled": true,
+      "independent_override": false,
+      "override_sweep_type": "LINEAR",
+      "override_source_func": "VOLTAGE",
+      "override_start_level": 0.0,
+      "override_stop_level": 1.2,
+      "override_compliance": 0.1,
+      "visa_resource": ""
+    }
+  ]
+}

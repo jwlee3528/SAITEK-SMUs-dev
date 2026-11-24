@@ -1,25 +1,19 @@
-"""PyQt6 + PyQtGraph Integrated SMU Desktop Control & Analysis Dashboard (v3.0 + All 9 UX Upgrades).
+"""PyQt6 + PyQtGraph Integrated SMU Desktop Control & Analysis Dashboard
+(Tek QuickStart Modern 3-Column Layout + Dark Oscilloscope-Style High-Contrast Graph + Live KPI Readout Cards + Talker/Listener Dock).
 
-Includes all Phase 1~3 capabilities plus the 9 User Experience upgrades:
-1. TEK_quickstart-style Beginner Connection Wizard & Multi-SMU (1~10) per-unit communication test + checklist (`SMUConnectionWizardDialog`).
-2. Arbitrary Waveform Editor step deletion (`- 선택 스텝 삭제`, `🗑 전체 초기화`) as well as addition.
-3. Easy Parametric Waveform Generator (`EasyWaveformShape`: Square/Pulse/Triangle/Staircase/Sine + Level + Duration + Repeat Count `x100` or `-1` Infinite Continuous).
-4. Detachable / Pop-out Graph Window (`🗗 그래프 새 창으로 분리`, multiple independent windows supported).
-5. Automatic Screen Resolution Adaptation (`fit_and_center_window`, `show_adaptive`).
-6. Direct Reference Manual PDF icon button (`📖 매뉴얼 보기`) for the selected SMU model.
-7. Per-Instrument / Per-Channel Independent Waveform Mode & Source Function (`VOLTAGE` vs `CURRENT`) separation when 2+ instruments/channels are connected.
-8. Out-of-Range Auto-Clamping with User Notification (`clamp_value_with_notice`): alerts user and clamps input to model maximum/minimum.
-9. One-Click Full Setup Save & Load (`💾 설정 저장` / `📂 설정 불러오기`) + automatic last-session persistence.
+Preserves 100% of Phase 1~3 capabilities, all 9 UX upgrades, 2450 real hardware support,
+persistent export directory, Tek QuickStart 5-sheet Excel report, and live animated progress banner.
 """
 
 from __future__ import annotations
 
-import sys
+from datetime import datetime
 from pathlib import Path
+import sys
 import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor, QFont
+from PyQt6.QtGui import QCloseEvent, QColor, QFont, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,9 +32,11 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStatusBar,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -50,6 +46,7 @@ from PyQt6.QtWidgets import (
 import pyqtgraph as pg
 
 from smu_app.analysis.iv_pulse_analyzer import (
+    analyze_measurement_points,
     compute_dual_cursor_metrics,
     lttb_downsample,
 )
@@ -85,6 +82,7 @@ from smu_app.storage.exporter import DataExporter
 from smu_app.storage.setup_manager import (
     SetupPersistenceManager,
     clamp_value_with_notice,
+    find_manual_pdf_for_model,
 )
 from smu_app.sync.cluster_manager import ChannelRole, CombinedOutputConfig
 from smu_app.ui.combining_wizard import OutputCombiningWizardDialog
@@ -95,6 +93,7 @@ from smu_app.ui.connection_wizard import (
     open_model_manual_pdf,
 )
 from smu_app.ui.detached_graph_dialog import DetachedGraphWindow
+from smu_app.ui.theme import GLOBAL_STYLESHEET
 
 
 class MeasurementWorkerThread(QThread):
@@ -102,7 +101,7 @@ class MeasurementWorkerThread(QThread):
     updates elapsed time, and keeps the ALL STOP button clickable during long hardware sweeps.
     """
 
-    finished_ok = pyqtSignal(object)   # MeasurementResult
+    finished_ok = pyqtSignal(object)
     failed_err = pyqtSignal(str)
 
     def __init__(
@@ -142,11 +141,49 @@ class MeasurementWorkerThread(QThread):
             self.failed_err.emit(str(exc))
 
 
+class KPIReadoutCard(QFrame):
+    """Tek QuickStart-inspired live measurement KPI readout card (Middle Column)."""
+
+    def __init__(self, title: str, subtitle: str, unit_placeholder: str, accent_color: str = "#0284c7") -> None:
+        super().__init__()
+        self.setStyleSheet(
+            "KPIReadoutCard { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; }"
+        )
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(2)
+
+        top = QHBoxLayout()
+        lbl_t = QLabel(f"● {title}")
+        lbl_t.setStyleSheet("font-weight: bold; color: #0f172a; font-size: 8.8pt; border: none;")
+        top.addWidget(lbl_t, 1)
+
+        self.lbl_value = QLabel(unit_placeholder)
+        self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_value.setStyleSheet(
+            f"background-color: #f0fdf4; color: {accent_color}; border: 1px solid #bbf7d0; "
+            "border-radius: 4px; padding: 2px 8px; font-family: Consolas, '맑은 고딕'; font-weight: bold; font-size: 9.2pt;"
+        )
+        top.addWidget(self.lbl_value)
+        v.addLayout(top)
+
+        lbl_sub = QLabel(subtitle)
+        lbl_sub.setStyleSheet("color: #64748b; font-size: 7.8pt; border: none;")
+        v.addWidget(lbl_sub)
+
+    def set_value(self, text: str) -> None:
+        self.lbl_value.setText(text)
+
+
 class SMUMainWindow(QMainWindow):
-    """Main Desktop GUI for Tektronix/Keithley 8-Model SMU Control (Phase 1~3 + 9 UX Upgrades)."""
+    """Modern Tek QuickStart-Inspired Integrated SMU Control, Live Graphing & Analysis Window."""
+
+    _SERIES_COLORS = ["#38bdf8", "#4ade80", "#facc15", "#f472b6", "#c084fc", "#fb923c"]
 
     def __init__(self, show_startup_wizard: bool = False, prefer_simulator: bool = False) -> None:
         super().__init__()
+        self.setStyleSheet(GLOBAL_STYLESHEET)
+
         self.registry = ProfileRegistry()
         self.spy = CommandSpy()
         self.visa_mgr = VISAConnectionManager(spy=self.spy)
@@ -173,21 +210,22 @@ class SMUMainWindow(QMainWindow):
         self._meas_timer.setInterval(200)
         self._meas_timer.timeout.connect(self._on_measurement_timer_tick)
         self._is_measuring: bool = False
+        self.model_buttons: dict[str, QPushButton] = {}
+        self._log_visible: bool = True
 
-        # Requirement 5: Automatic screen resolution adaptation (locked once at startup so measurement never resizes window)
         avail = get_available_screen_geometry(self)
         self.is_compact_screen = avail.width() <= 1600 or avail.height() <= 920
         self.setWindowTitle(
-            f"SAITEK Tektronix/Keithley SMU Advanced Control Suite v3.0 ({avail.width()}×{avail.height()})"
+            f"Tektronix & Keithley SMU Advanced Suite v3.0 (화면 자동 최적화: {avail.width()}×{avail.height()})"
         )
 
         self._build_ui()
         fit_and_center_window(
             self,
-            target_w_ratio=0.95 if self.is_compact_screen else 0.90,
+            target_w_ratio=0.95 if self.is_compact_screen else 0.92,
             target_h_ratio=0.94 if self.is_compact_screen else 0.90,
-            min_w=1024,
-            min_h=640,
+            min_w=1080,
+            min_h=660,
         )
         self._geometry_locked = True
 
@@ -197,7 +235,6 @@ class SMUMainWindow(QMainWindow):
         self.refresh_waveform_preview()
         self.refresh_soa_chart()
 
-        # Requirement 9: Auto-restore last saved session setup if present, but ALWAYS keep user_preferences.json export_dir as source of truth
         if SetupPersistenceManager.DEFAULT_LAST_SESSION_PATH.exists():
             try:
                 saved_pref_dir = SetupPersistenceManager.get_saved_export_dir()
@@ -210,7 +247,6 @@ class SMUMainWindow(QMainWindow):
             QTimer.singleShot(120, self.open_connection_wizard)
 
     def show_adaptive(self) -> None:
-        """Requirement 5: Maximize on compact screens or display fitted & centered on high-res monitors."""
         avail = get_available_screen_geometry(self)
         if avail.width() <= 1600 or avail.height() <= 920:
             self.showMaximized()
@@ -218,200 +254,310 @@ class SMUMainWindow(QMainWindow):
             self.show()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Requirement 9: Automatically save current instrument & parameter setup on exit."""
         try:
             self.save_setup_to_path(SetupPersistenceManager.DEFAULT_LAST_SESSION_PATH, silent=True)
         except Exception:
             pass
         super().closeEvent(event)
 
+    # =========================================================================
+    # UI Construction (Tek QuickStart-Inspired Modern Layout)
+    # =========================================================================
+
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
-        m = 6 if self.is_compact_screen else 10
-        root_layout.setContentsMargins(m, m, m, m)
-        root_layout.setSpacing(6)
+        root = QVBoxLayout(central)
+        m = 5 if self.is_compact_screen else 8
+        root.setContentsMargins(m, m, m, m)
+        root.setSpacing(5)
 
-        # 1. Global Top Bar (Connection Wizard, Model, Variant, Manual Icon, Nodes 1~10, Save/Load Setup, ALL STOP)
-        top_bar = QHBoxLayout()
-        top_bar.setSpacing(6)
-
-        self.btn_conn_wizard = QPushButton("🔌 장비 연결 & 통신 점검")
-        self.btn_conn_wizard.setToolTip("TEK_quickstart 스타일 초보자 연결 마법사 및 다중 장비 개별 통신 테스트를 엽니다.")
-        self.btn_conn_wizard.setStyleSheet(
-            "background-color: #0b2545; color: #38bdf8; font-weight: bold; padding: 6px 10px; border-radius: 4px;"
+        # ---------------------------------------------------------------------
+        # 1. GLOBAL DARK NAVY TOP HEADER BAR (Matches Tek QuickStart Image)
+        # ---------------------------------------------------------------------
+        header_bar = QFrame()
+        header_bar.setStyleSheet(
+            "QFrame { background-color: #0b2545; color: white; border-radius: 6px; }"
         )
-        self.btn_conn_wizard.clicked.connect(self.open_connection_wizard)
-        top_bar.addWidget(self.btn_conn_wizard)
+        header_bar.setFixedHeight(44 if self.is_compact_screen else 48)
+        h_layout = QHBoxLayout(header_bar)
+        h_layout.setContentsMargins(10, 4, 10, 4)
+        h_layout.setSpacing(7)
 
-        top_bar.addWidget(QLabel("<b>모델:</b>"))
+        # SSAITEK Logo Badge
+        lbl_logo = QLabel()
+        lbl_logo.setStyleSheet(
+            "background-color: #ffffff; border: 1px solid #7dd3fc; border-radius: 4px; padding: 2px 6px;"
+        )
+        logo_path = Path(__file__).resolve().parents[3] / "configs" / "assets" / "ssaitek_logo.png"
+        if logo_path.exists():
+            pix = QPixmap(str(logo_path))
+            if not pix.isNull():
+                lbl_logo.setPixmap(pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
+            else:
+                lbl_logo.setText("SSAITEK")
+        else:
+            lbl_logo.setText("SSAITEK")
+            lbl_logo.setStyleSheet("background-color: white; color: #0284c7; font-weight: bold; padding: 3px 8px; border-radius: 4px;")
+        h_layout.addWidget(lbl_logo)
+
+        lbl_brand = QLabel("⚡ SMU PRO SUITE")
+        lbl_brand.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+        lbl_brand.setStyleSheet("color: #38bdf8; border: none;")
+        h_layout.addWidget(lbl_brand)
+
+        lbl_v = QLabel("VISA 리소스:")
+        lbl_v.setStyleSheet("color: #e2e8f0; font-weight: bold; border: none;")
+        h_layout.addWidget(lbl_v)
+
+        self.cmb_visa_bar = QComboBox()
+        self.cmb_visa_bar.setEditable(True)
+        self.cmb_visa_bar.setMinimumWidth(210)
+        self.cmb_visa_bar.setMaximumWidth(340)
+        self.cmb_visa_bar.setStyleSheet("background-color: white; color: #0f172a; padding: 3px 6px; border-radius: 4px;")
+        self.cmb_visa_bar.currentIndexChanged.connect(self._on_top_visa_resource_changed)
+        h_layout.addWidget(self.cmb_visa_bar)
+
+        btn_rescan = QPushButton("🔄 검색")
+        btn_rescan.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold; border: none; padding: 5px 10px;")
+        btn_rescan.clicked.connect(lambda: self._populate_top_visa_combo(self.cmb_model.currentText()))
+        h_layout.addWidget(btn_rescan)
+
+        self.chk_sim_mode = QCheckBox("시뮬레이션 모드")
+        self.chk_sim_mode.setChecked(self.prefer_simulator)
+        self.chk_sim_mode.setStyleSheet("color: #f8fafc; font-weight: bold; border: none;")
+        self.chk_sim_mode.toggled.connect(self._on_sim_mode_toggled)
+        h_layout.addWidget(self.chk_sim_mode)
+
+        self.lbl_conn_badge = QLabel("[대기 중]")
+        self.lbl_conn_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_conn_badge.setStyleSheet(
+            "color: #4ade80; font-weight: bold; font-size: 8.8pt; border: none; padding: 0 6px;"
+        )
+        h_layout.addWidget(self.lbl_conn_badge, stretch=1)
+
+        self.btn_conn_wizard = QPushButton("📋 사전 준비 점검표")
+        self.btn_conn_wizard.setStyleSheet("background-color: #1d4ed8; color: white; font-weight: bold; border: none; padding: 5px 10px;")
+        self.btn_conn_wizard.clicked.connect(self.open_connection_wizard)
+        h_layout.addWidget(self.btn_conn_wizard)
+
+        self.btn_save_setup = QPushButton("💾 설정 저장")
+        self.btn_save_setup.setStyleSheet("background-color: #334155; color: white; font-weight: bold; border: none; padding: 5px 9px;")
+        self.btn_save_setup.clicked.connect(self.save_setup_dialog)
+        h_layout.addWidget(self.btn_save_setup)
+
+        self.btn_load_setup = QPushButton("📂 불러오기")
+        self.btn_load_setup.setStyleSheet("background-color: #334155; color: white; font-weight: bold; border: none; padding: 5px 9px;")
+        self.btn_load_setup.clicked.connect(self.load_setup_dialog)
+        h_layout.addWidget(self.btn_load_setup)
+
+        btn_fit = QPushButton("🖥 화면 맞춤")
+        btn_fit.setStyleSheet("background-color: #475569; color: white; font-weight: bold; border: none; padding: 5px 9px;")
+        btn_fit.clicked.connect(lambda: fit_and_center_window(self, 0.93, 0.91))
+        h_layout.addWidget(btn_fit)
+
+        self.btn_all_stop = QPushButton("🛑 긴급 정지 (ALL STOP)")
+        self.btn_all_stop.setStyleSheet(
+            "background-color: #dc2626; color: white; font-weight: bold; border: none; padding: 6px 12px; border-radius: 4px;"
+        )
+        self.btn_all_stop.clicked.connect(self.emergency_stop)
+        h_layout.addWidget(self.btn_all_stop)
+
+        root.addWidget(header_bar)
+
+        # ---------------------------------------------------------------------
+        # 2. 8-MODEL QUICK SELECTOR TAB STRIP (Matches Tek QuickStart Category Strip)
+        # ---------------------------------------------------------------------
+        strip_row = QHBoxLayout()
+        strip_row.setSpacing(4)
+        model_tags = [
+            ("2450", "01. 2450 (200V/1A)"),
+            ("2460", "02. 2460 (7A High-I)"),
+            ("2461", "03. 2461 (10A Pulse)"),
+            ("2470", "04. 2470 (1100V HV)"),
+            ("2600B", "05. 2600B (1~2CH)"),
+            ("2601B-PULSE", "06. 2601B-PULSE (10µs)"),
+            ("2606B", "07. 2606B (4CH 1U)"),
+            ("2651A", "08. 2651A (50A 2kW)"),
+        ]
+        for m_key, m_label in model_tags:
+            btn = QPushButton(m_label)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, mk=m_key: self.cmb_model.setCurrentText(mk))
+            self.model_buttons[m_key] = btn
+            strip_row.addWidget(btn)
+        strip_row.addStretch(1)
+        root.addLayout(strip_row)
+
+        # ---------------------------------------------------------------------
+        # 3. SELECTED INSTRUMENT INFO & QUICK ACTION BANNER (Matches Image Row 3)
+        # ---------------------------------------------------------------------
+        info_card = QFrame()
+        info_card.setStyleSheet(
+            "QFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        ic_v = QVBoxLayout(info_card)
+        ic_v.setContentsMargins(10, 6, 10, 6)
+        ic_v.setSpacing(4)
+
+        ic_top = QHBoxLayout()
+        self.lbl_model_title = QLabel("⚡ Keithley 2450 SourceMeter")
+        self.lbl_model_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+        self.lbl_model_title.setStyleSheet("color: #0b2545; border: none;")
+        ic_top.addWidget(self.lbl_model_title)
+
+        # Keep cmb_model visible/functional as dropdown selector for compatibility & quick switching
         self.cmb_model = QComboBox()
         self.cmb_model.addItems(self.registry.list_models())
+        self.cmb_model.setFixedWidth(120)
         self.cmb_model.currentTextChanged.connect(self._on_model_changed)
-        top_bar.addWidget(self.cmb_model)
+        ic_top.addWidget(self.cmb_model)
 
-        self.btn_manual = QPushButton("📖 매뉴얼(PDF)")
-        self.btn_manual.setToolTip("선택된 SMU 모델의 프로그래밍 레퍼런스 매뉴얼(PDF)을 즉시 엽니다.")
-        self.btn_manual.setStyleSheet(
-            "background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; font-weight: bold; padding: 5px 9px; border-radius: 4px;"
-        )
-        self.btn_manual.clicked.connect(self.open_current_model_manual)
-        top_bar.addWidget(self.btn_manual)
-
-        top_bar.addWidget(QLabel("<b>세부모델:</b>"))
+        ic_top.addWidget(QLabel("세부모델:"))
         self.cmb_variant = QComboBox()
+        self.cmb_variant.setFixedWidth(135)
         self.cmb_variant.currentTextChanged.connect(self._update_sync_warning_banner)
-        top_bar.addWidget(self.cmb_variant)
+        ic_top.addWidget(self.cmb_variant)
 
-        top_bar.addWidget(QLabel("<b>대수(1~10):</b>"))
+        ic_top.addWidget(QLabel("장비 대수(1~10):"))
         self.spn_nodes = QSpinBox()
         self.spn_nodes.setRange(1, 10)
         self.spn_nodes.setValue(1)
+        self.spn_nodes.setFixedWidth(55)
         self.spn_nodes.valueChanged.connect(self._on_nodes_changed)
-        top_bar.addWidget(self.spn_nodes)
+        ic_top.addWidget(self.spn_nodes)
 
-        self.btn_combining = QPushButton("⚡ 출력 결합")
-        self.btn_combining.setStyleSheet("background-color: #0E7490; color: white; font-weight: bold; padding: 6px 9px;")
-        self.btn_combining.clicked.connect(self.open_combining_wizard)
-        top_bar.addWidget(self.btn_combining)
-
-        self.btn_save_setup = QPushButton("💾 설정 저장")
-        self.btn_save_setup.setToolTip("현재 장비, 다중 채널, 파형 및 펄스 설정 전체를 파일로 저장합니다.")
-        self.btn_save_setup.clicked.connect(self.save_setup_dialog)
-        top_bar.addWidget(self.btn_save_setup)
-
-        self.btn_load_setup = QPushButton("📂 설정 불러오기")
-        self.btn_load_setup.setToolTip("저장해 둔 장비 및 파형 설정 파일을 불러와 즉시 복원합니다.")
-        self.btn_load_setup.clicked.connect(self.load_setup_dialog)
-        top_bar.addWidget(self.btn_load_setup)
-
-        top_bar.addWidget(QLabel("<b>DUT:</b>"))
+        ic_top.addWidget(QLabel("시뮬레이션 DUT:"))
         self.cmb_dut = QComboBox()
         for d in VirtualDUTType:
             self.cmb_dut.addItem(d.value)
+        self.cmb_dut.setFixedWidth(130)
         self.cmb_dut.currentTextChanged.connect(self._on_dut_changed)
-        top_bar.addWidget(self.cmb_dut)
+        ic_top.addWidget(self.cmb_dut)
 
         self.chk_interlock = QCheckBox("Interlock(>42V)")
         self.chk_interlock.setChecked(True)
         self.chk_interlock.toggled.connect(self._on_interlock_toggled)
-        top_bar.addWidget(self.chk_interlock)
+        ic_top.addWidget(self.chk_interlock)
 
-        top_bar.addWidget(QLabel("<b>VISA 연결:</b>"))
-        self.cmb_visa_bar = QComboBox()
-        self.cmb_visa_bar.setEditable(True)
-        self.cmb_visa_bar.setMinimumWidth(180)
-        self.cmb_visa_bar.setMaximumWidth(280)
-        self.cmb_visa_bar.currentIndexChanged.connect(self._on_top_visa_resource_changed)
-        top_bar.addWidget(self.cmb_visa_bar)
+        ic_top.addStretch(1)
+
+        self.btn_manual = QPushButton("📖 PDF 매뉴얼")
+        self.btn_manual.setStyleSheet("background-color: #1e3a5f; color: white; font-weight: bold; padding: 5px 12px;")
+        self.btn_manual.clicked.connect(self.open_current_model_manual)
+        ic_top.addWidget(self.btn_manual)
+
+        self.btn_idn_check = QPushButton("🔍 상태 확인 (*IDN?)")
+        self.btn_idn_check.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 5px 12px;")
+        self.btn_idn_check.clicked.connect(self._quick_idn_check)
+        ic_top.addWidget(self.btn_idn_check)
+
+        self.btn_combining = QPushButton("⚡ 출력 결합 마법사")
+        self.btn_combining.setStyleSheet("background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; font-weight: bold; padding: 5px 12px;")
+        self.btn_combining.clicked.connect(self.open_combining_wizard)
+        ic_top.addWidget(self.btn_combining)
+
+        ic_v.addLayout(ic_top)
 
         self.lbl_spec_badge = QLabel()
         self.lbl_spec_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.lbl_spec_badge.setStyleSheet(
-            "background-color: #EFF6FF; color: #0B1F3A; padding: 4px 8px; border-radius: 4px; font-weight: bold;"
-        )
-        top_bar.addWidget(self.lbl_spec_badge, stretch=1)
+        self.lbl_spec_badge.setStyleSheet("color: #475569; font-size: 8.5pt; border: none;")
+        ic_v.addWidget(self.lbl_spec_badge)
 
-        self.btn_run = QPushButton("▶ 스위프/파형 측정 시작 (Run)")
-        self.btn_run.setStyleSheet(
-            "background-color: #0070C0; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
-        )
-        self.btn_run.clicked.connect(self.execute_measurement)
-        top_bar.addWidget(self.btn_run)
+        root.addWidget(info_card)
 
-        self.btn_all_stop = QPushButton("■ 긴급 정지 (ALL STOP)")
-        self.btn_all_stop.setStyleSheet(
-            "background-color: #DC2626; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
-        )
-        self.btn_all_stop.clicked.connect(self.emergency_stop)
-        top_bar.addWidget(self.btn_all_stop)
-
-        root_layout.addLayout(top_bar)
-
+        # Warning & Live Progress Banners
         self.lbl_warning_banner = QLabel()
         self.lbl_warning_banner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lbl_warning_banner.setStyleSheet(
-            "background-color: #FFF7ED; color: #C2410C; border: 1px solid #FB923C; padding: 6px; font-weight: bold;"
+            "background-color: #fff7ed; color: #c2410c; border: 1px solid #fb923c; border-radius: 4px; padding: 5px 8px; font-weight: bold;"
         )
         self.lbl_warning_banner.setVisible(False)
-        root_layout.addWidget(self.lbl_warning_banner)
+        root.addWidget(self.lbl_warning_banner)
 
-        # Live Measurement In-Progress Status Bar (Visible prominently while measuring!)
         self.frm_progress_banner = QFrame()
         self.frm_progress_banner.setStyleSheet(
-            "QFrame { background-color: #DBEAFE; border: 1px solid #2563EB; border-radius: 5px; }"
+            "QFrame { background-color: #dbeafe; border: 1px solid #2563eb; border-radius: 5px; }"
         )
-        self.frm_progress_banner.setFixedHeight(36)
+        self.frm_progress_banner.setFixedHeight(34)
         pb_layout = QHBoxLayout(self.frm_progress_banner)
-        pb_layout.setContentsMargins(10, 3, 10, 3)
+        pb_layout.setContentsMargins(10, 2, 10, 2)
         pb_layout.setSpacing(10)
-
         self.lbl_running_status = QLabel("⏳ 측정 진행 중...")
         self.lbl_running_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.lbl_running_status.setStyleSheet("color: #1E3A8A; font-weight: bold; font-size: 9.5pt; border: none;")
-        pb_layout.addWidget(self.lbl_running_status, stretch=2)
-
+        self.lbl_running_status.setStyleSheet("color: #1e3a8a; font-weight: bold; border: none;")
+        pb_layout.addWidget(self.lbl_running_status, 2)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate animated marquee while instrument sweeps
-        self.progress_bar.setFixedWidth(260)
-        self.progress_bar.setFixedHeight(18)
-        self.progress_bar.setStyleSheet(
-            "QProgressBar { border: 1px solid #93C5FD; border-radius: 4px; background-color: white; text-align: center; }"
-            "QProgressBar::chunk { background-color: #2563EB; border-radius: 3px; }"
-        )
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFixedWidth(240)
+        self.progress_bar.setFixedHeight(16)
         pb_layout.addWidget(self.progress_bar)
-
         self.lbl_elapsed_time = QLabel("경과 시간: 0.0 s")
-        self.lbl_elapsed_time.setStyleSheet("color: #1D4ED8; font-family: Consolas, '맑은 고딕'; font-weight: bold; border: none;")
+        self.lbl_elapsed_time.setStyleSheet("color: #1d4ed8; font-family: Consolas; font-weight: bold; border: none;")
         pb_layout.addWidget(self.lbl_elapsed_time)
-
         self.frm_progress_banner.setVisible(False)
-        root_layout.addWidget(self.frm_progress_banner)
+        root.addWidget(self.frm_progress_banner)
 
-        # 2. Main Splitter
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # ---------------------------------------------------------------------
+        # 4. MAIN VERTICAL SPLITTER (Top = 3-Column Workspace | Bottom = Talker/Listener Dock)
+        # ---------------------------------------------------------------------
+        main_vsplit = QSplitter(Qt.Orientation.Vertical)
 
-        left_panel = QWidget()
-        left_panel.setMinimumWidth(340)
-        left_panel.setMaximumWidth(430)
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 6, 0)
+        # === 3-COLUMN HORIZONTAL SPLITTER (Matches Tek QuickStart 3-Bordered Panels) ===
+        col_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Quick Single DC Source & Measure Box (Direct 2450 Source + Simultaneous V/I/R/P Measurement)
-        grp_quick_dc = QGroupBox("⚡ 0. 단일 DC 즉시 소스 인가 & 측정 (Quick Source & Measure)")
-        grp_quick_dc.setStyleSheet("QGroupBox { font-weight: bold; color: #0070C0; }")
-        qdc_layout = QVBoxLayout(grp_quick_dc)
+        # =====================================================================
+        # COLUMN 1 (BLUE BORDER): 1. 입력이 필요한 사항 (Required Input Parameters)
+        # =====================================================================
+        col1_group = QGroupBox("1. 입력이 필요한 사항 (Required Input Parameters)")
+        col1_group.setObjectName("colInput")
+        col1_outer = QVBoxLayout(col1_group)
+        col1_outer.setContentsMargins(6, 10, 6, 6)
+
+        col1_scroll = QScrollArea()
+        col1_scroll.setWidgetResizable(True)
+        col1_inner = QWidget()
+        col1_inner.setStyleSheet("background-color: #ffffff;")
+        c1_layout = QVBoxLayout(col1_inner)
+        c1_layout.setContentsMargins(2, 2, 4, 2)
+        c1_layout.setSpacing(6)
+
+        # Quick Single DC Source & Measure Section
+        lbl_sec0 = QLabel("0. 단일 DC 즉시 소스 인가 & 1회 측정")
+        lbl_sec0.setStyleSheet("color: #0284c7; font-weight: bold; padding-top: 2px;")
+        c1_layout.addWidget(lbl_sec0)
+
         qdc_row = QHBoxLayout()
-        qdc_row.addWidget(QLabel("인가 값(V/A):"))
         self.spn_quick_dc_level = QDoubleSpinBox()
         self.spn_quick_dc_level.setDecimals(4)
         self.spn_quick_dc_level.setRange(-10000.0, 10000.0)
         self.spn_quick_dc_level.setValue(1.0)
+        self.spn_quick_dc_level.setSuffix(" V/A")
         self.spn_quick_dc_level.editingFinished.connect(
             lambda: self._validate_and_clamp_spinbox(self.spn_quick_dc_level, "source_level", "단일 DC 소스 레벨")
         )
         qdc_row.addWidget(self.spn_quick_dc_level, 1)
 
-        self.btn_quick_dc = QPushButton("⚡ 즉시 소스 인가 & 1회 측정")
-        self.btn_quick_dc.setStyleSheet(
-            "background-color: #16A34A; color: white; font-weight: bold; padding: 6px 10px; border-radius: 4px;"
-        )
+        self.btn_quick_dc = QPushButton("⚡ 즉시 1회 측정")
+        self.btn_quick_dc.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold; border: none; padding: 5px 10px;")
         self.btn_quick_dc.clicked.connect(self.execute_quick_single_dc_measurement)
         qdc_row.addWidget(self.btn_quick_dc)
-        qdc_layout.addLayout(qdc_row)
+        c1_layout.addLayout(qdc_row)
 
-        self.lbl_live_dmm = QLabel("전압(V): ---   |   전류(I): ---   |   저항(R): ---   |   전력(P): ---")
+        self.lbl_live_dmm = QLabel("V: --- | I: --- | R: --- | P: ---")
         self.lbl_live_dmm.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lbl_live_dmm.setStyleSheet(
-            "background-color: #0B1F3A; color: #38BDF8; font-family: Consolas, '맑은 고딕'; font-size: 9.5pt; "
-            "font-weight: bold; padding: 6px; border-radius: 4px;"
+            "background-color: #0f172a; color: #38bdf8; font-family: Consolas; font-size: 8.5pt; font-weight: bold; padding: 5px; border-radius: 4px;"
         )
-        qdc_layout.addWidget(self.lbl_live_dmm)
-        left_layout.addWidget(grp_quick_dc)
+        c1_layout.addWidget(self.lbl_live_dmm)
 
-        grp_sweep = QGroupBox("1. 파형 / 스위프 & 반복 제어 (초과 입력 시 최댓값 자동 보정)")
-        form_swp = QFormLayout(grp_sweep)
+        # Section 1: Sweep & Waveform Settings
+        lbl_sec1 = QLabel("1. 스위프 / 파형 & 반복 제어")
+        lbl_sec1.setStyleSheet("color: #1d4ed8; font-weight: bold; padding-top: 4px;")
+        c1_layout.addWidget(lbl_sec1)
+
+        form_swp = QFormLayout()
+        form_swp.setSpacing(5)
 
         self.cmb_sweep_type = QComboBox()
         for st in SweepType:
@@ -422,230 +568,340 @@ class SMUMainWindow(QMainWindow):
         self.cmb_source_func = QComboBox()
         self.cmb_source_func.addItems([SourceFunction.VOLTAGE.value, SourceFunction.CURRENT.value])
         self.cmb_source_func.currentTextChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("소스(인가) 기능:", self.cmb_source_func)
+        form_swp.addRow("소스 기능:", self.cmb_source_func)
 
-        # Wide physical spinbox range so user can type out-of-range numbers and get Requirement 8 notification + auto-clamp
         self.spn_start = QDoubleSpinBox()
         self.spn_start.setDecimals(4)
         self.spn_start.setRange(-10000.0, 10000.0)
         self.spn_start.setValue(0.0)
-        self.spn_start.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_start, "source_level", "시작/바이어스 레벨"))
+        self.spn_start.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_start, "source_level", "시작 레벨"))
         self.spn_start.valueChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("시작/바이어스 (Start V/A):", self.spn_start)
+        form_swp.addRow("시작 레벨 (V/A):", self.spn_start)
 
         self.spn_stop = QDoubleSpinBox()
         self.spn_stop.setDecimals(4)
         self.spn_stop.setRange(-10000.0, 10000.0)
         self.spn_stop.setValue(1.2)
-        self.spn_stop.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_stop, "source_level", "종료/펄스 레벨"))
+        self.spn_stop.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_stop, "source_level", "종료 레벨"))
         self.spn_stop.valueChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("종료/펄스 레벨 (Stop V/A):", self.spn_stop)
+        form_swp.addRow("종료 레벨 (V/A):", self.spn_stop)
 
         self.spn_points = QSpinBox()
         self.spn_points.setRange(2, 1000000)
         self.spn_points.setValue(21)
         self.spn_points.valueChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("측정 포인트 수:", self.spn_points)
+        form_swp.addRow("포인트 수 (pts):", self.spn_points)
 
         self.spn_delay = QDoubleSpinBox()
         self.spn_delay.setDecimals(5)
         self.spn_delay.setRange(0.00001, 60.0)
         self.spn_delay.setValue(0.005)
         self.spn_delay.valueChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("스텝 지연 (Delay s):", self.spn_delay)
+        form_swp.addRow("스텝 지연 (s):", self.spn_delay)
 
         self.cmb_repeat_mode = QComboBox()
         for rm in RepeatMode:
             self.cmb_repeat_mode.addItem(rm.value)
         self.cmb_repeat_mode.currentTextChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("반복 출력 모드:", self.cmb_repeat_mode)
+        form_swp.addRow("반복 모드:", self.cmb_repeat_mode)
 
         self.spn_repeat_count = QSpinBox()
         self.spn_repeat_count.setRange(-1, 100000)
         self.spn_repeat_count.setValue(1)
-        self.spn_repeat_count.setToolTip("1: 단발 출력 | 2 이상(예: 100): N회 반복 출력 | -1: 무한 연속 출력")
         self.spn_repeat_count.valueChanged.connect(self._on_repeat_count_spin_changed)
-        form_swp.addRow("반복 개수 (-1=무한연속):", self.spn_repeat_count)
-
-        self.chk_return_bias = QCheckBox("종료 시 Idle(Bias 0V) 복귀 (해제 시 Hold)")
-        self.chk_return_bias.setChecked(True)
-        self.chk_return_bias.toggled.connect(self._on_sweep_param_changed)
-        form_swp.addRow(self.chk_return_bias)
+        form_swp.addRow("반복 횟수(-1=무한):", self.spn_repeat_count)
 
         self.spn_compliance = QDoubleSpinBox()
         self.spn_compliance.setDecimals(5)
         self.spn_compliance.setRange(1e-7, 10000.0)
         self.spn_compliance.setValue(0.1)
-        self.spn_compliance.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance Limit"))
+        self.spn_compliance.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance"))
         self.spn_compliance.valueChanged.connect(self._on_sweep_param_changed)
-        form_swp.addRow("Compliance Limit (A/V):", self.spn_compliance)
+        form_swp.addRow("Compliance (A/V):", self.spn_compliance)
 
         self.spn_nplc = QDoubleSpinBox()
         self.spn_nplc.setDecimals(3)
         self.spn_nplc.setRange(0.0001, 100.0)
         self.spn_nplc.setValue(0.1)
-        self.spn_nplc.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_nplc, "nplc", "적분 시간(NPLC)"))
+        self.spn_nplc.editingFinished.connect(lambda: self._validate_and_clamp_spinbox(self.spn_nplc, "nplc", "NPLC"))
         form_swp.addRow("적분 시간 (NPLC):", self.spn_nplc)
 
-        left_layout.addWidget(grp_sweep)
+        c1_layout.addLayout(form_swp)
 
-        grp_safety = QGroupBox("2. 정밀도 & 안전 보호 (Safety & Precision)")
-        form_saf = QFormLayout(grp_safety)
+        self.chk_return_bias = QCheckBox("종료 시 Bias(0V) 복귀 (해제 시 Hold)")
+        self.chk_return_bias.setChecked(True)
+        self.chk_return_bias.toggled.connect(self._on_sweep_param_changed)
+        c1_layout.addWidget(self.chk_return_bias)
 
+        # Section 2: Precision & Safety
+        lbl_sec2 = QLabel("2. 정밀도 & 안전 보호 (Safety)")
+        lbl_sec2.setStyleSheet("color: #1d4ed8; font-weight: bold; padding-top: 4px;")
+        c1_layout.addWidget(lbl_sec2)
+
+        form_saf = QFormLayout()
+        form_saf.setSpacing(5)
         self.cmb_sense = QComboBox()
         self.cmb_sense.addItems([SenseMode.WIRE_2.value, SenseMode.WIRE_4.value])
-        form_saf.addRow("배선 모드 (2/4-Wire):", self.cmb_sense)
+        form_saf.addRow("배선 모드:", self.cmb_sense)
 
         self.cmb_offmode = QComboBox()
         for om in OutputOffMode:
             self.cmb_offmode.addItem(om.value)
-        form_saf.addRow("Output-Off 상태:", self.cmb_offmode)
+        form_saf.addRow("Output-Off:", self.cmb_offmode)
+        c1_layout.addLayout(form_saf)
 
-        self.chk_contact = QCheckBox("4-Wire Contact Check 수행")
-        form_saf.addRow(self.chk_contact)
+        self.chk_contact = QCheckBox("4-Wire Contact Check 사전 검사")
+        c1_layout.addWidget(self.chk_contact)
 
         self.chk_neg_zero = QCheckBox("26xx 음수 전환 지연(-1e-12) 자동 보정")
         self.chk_neg_zero.setChecked(True)
-        form_saf.addRow(self.chk_neg_zero)
+        c1_layout.addWidget(self.chk_neg_zero)
 
-        left_layout.addWidget(grp_safety)
+        # Section 3: Persistent Export Directory
+        lbl_sec3 = QLabel("3. 파일 저장 위치 (자동 기억)")
+        lbl_sec3.setStyleSheet("color: #1d4ed8; font-weight: bold; padding-top: 4px;")
+        c1_layout.addWidget(lbl_sec3)
 
-        grp_exp = QGroupBox("3. 대용량 데이터 저장 & 리포트 (Export)")
-        exp_layout = QVBoxLayout(grp_exp)
-
-        # Persistent Export Folder Selector Row
         dir_row = QHBoxLayout()
         self.txt_export_dir = QLineEdit(str(self.exporter.output_dir))
         self.txt_export_dir.setReadOnly(True)
-        self.txt_export_dir.setToolTip(f"현재 파일 저장 폴더: {self.exporter.output_dir}")
-        self.txt_export_dir.setStyleSheet("background-color: #F8FAFC; color: #0F172A; font-size: 8.5pt;")
+        self.txt_export_dir.setStyleSheet("background-color: #f8fafc; font-size: 8pt;")
         dir_row.addWidget(self.txt_export_dir, 1)
 
-        self.btn_choose_export_dir = QPushButton("📁 저장 위치 변경")
-        self.btn_choose_export_dir.setToolTip("리포트 및 데이터 파일이 저장될 폴더를 선택합니다 (선택한 위치는 계속 기억됩니다).")
-        self.btn_choose_export_dir.setStyleSheet("background-color: #E0F2FE; color: #0369A1; font-weight: bold; padding: 4px 8px;")
+        self.btn_choose_export_dir = QPushButton("📁 변경")
+        self.btn_choose_export_dir.setStyleSheet("background-color: #e0f2fe; color: #0369a1; font-weight: bold;")
         self.btn_choose_export_dir.clicked.connect(self.choose_export_directory)
         dir_row.addWidget(self.btn_choose_export_dir)
-        exp_layout.addLayout(dir_row)
+        c1_layout.addLayout(dir_row)
 
-        self.chk_auto_export = QCheckBox("측정 완료 시 자동 백업 (Auto-Export CSV)")
-        self.chk_auto_export.setChecked(False)
-        exp_layout.addWidget(self.chk_auto_export)
+        self.chk_auto_export = QCheckBox("측정 완료 시 자동 CSV 백업 (Auto-Export)")
+        c1_layout.addWidget(self.chk_auto_export)
 
-        btn_xlsx = QPushButton("📊 구조화 Excel (.xlsx + 체크리스트/설정/통계/그래프) 저장")
-        btn_xlsx.clicked.connect(self.export_excel)
-        btn_hist_xlsx = QPushButton("📚 Run History 다중 비교 Excel 리포트")
-        btn_hist_xlsx.clicked.connect(self.export_history_comparison)
-        btn_csv = QPushButton("📄 대용량 스트리밍 CSV 저장")
-        btn_csv.clicked.connect(self.export_csv)
-        btn_pq = QPushButton("⚡ 고속 Parquet / SQLite 아카이브 저장")
-        btn_pq.clicked.connect(self.export_parquet)
-        btn_img = QPushButton("🖼 그래프 이미지 (PNG / SVG) 저장")
-        btn_img.clicked.connect(self.export_plot_image)
+        c1_layout.addStretch(1)
+        col1_scroll.setWidget(col1_inner)
+        col1_outer.addWidget(col1_scroll)
 
-        for b in (btn_xlsx, btn_hist_xlsx, btn_csv, btn_pq, btn_img):
-            exp_layout.addWidget(b)
-        left_layout.addWidget(grp_exp)
-        left_layout.addStretch(1)
+        btn_reset_defaults = QPushButton("↺ 입력값 기본값(Default) 초기화")
+        btn_reset_defaults.clicked.connect(self._reset_input_defaults)
+        col1_outer.addWidget(btn_reset_defaults)
 
-        main_splitter.addWidget(left_panel)
+        col_splitter.addWidget(col1_group)
 
-        # Right Panel: 5 Tabs + Command Spy Console
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.tabs = QTabWidget()
+        # =====================================================================
+        # COLUMN 2 (GREEN BORDER): 2. 측정이 가능한 부분 & 실시간 분석 지표 (KPI Cards)
+        # =====================================================================
+        col2_group = QGroupBox("2. 실시간 측정 & 자동 특성 분석 (Live KPI Readouts)")
+        col2_group.setObjectName("colMetrics")
+        col2_outer = QVBoxLayout(col2_group)
+        col2_outer.setContentsMargins(6, 10, 6, 6)
 
-        # --- TAB 1: Real-time LTTB Graph, Dual Cursors & Detach Pop-out Button ---
-        graph_tab = QWidget()
-        g_layout = QVBoxLayout(graph_tab)
+        col2_scroll = QScrollArea()
+        col2_scroll.setWidgetResizable(True)
+        col2_inner = QWidget()
+        col2_inner.setStyleSheet("background-color: #ffffff;")
+        c2_layout = QVBoxLayout(col2_inner)
+        c2_layout.setContentsMargins(2, 2, 4, 2)
+        c2_layout.setSpacing(6)
 
-        g_toolbar = QHBoxLayout()
-        g_toolbar.addWidget(QLabel("<b>그래프 뷰 모드:</b>"))
-        self.cmb_plot_view = QComboBox()
-        self.cmb_plot_view.addItems(["I-V Characteristic (V vs I)", "Time-Domain Pulse/Waveform (Time vs I & V)"])
-        self.cmb_plot_view.currentTextChanged.connect(self._refresh_plot)
-        g_toolbar.addWidget(self.cmb_plot_view)
+        self.kpi_voltage = KPIReadoutCard("인가/측정 전압 범위 (Voltage)", "Min ~ Max Voltage (V)", "--- V", "#0369a1")
+        self.kpi_current = KPIReadoutCard("측정 전류 최대/평균 (Current)", "Peak & Mean Current (A)", "--- A", "#047857")
+        self.kpi_power = KPIReadoutCard("최대 소비 전력 (Peak Power)", "Max |V × I| Dissipation (W)", "--- W", "#7c3aed")
+        self.kpi_dvdi = KPIReadoutCard("미분 저항 (dV/dI Median)", "Differential Resistance (Ω)", "--- Ω", "#0f766e")
+        self.kpi_vth = KPIReadoutCard("문턱 전압 (Threshold Vth)", "Forward Conduction Knee (V)", "--- V", "#b45309")
+        self.kpi_ileak = KPIReadoutCard("누설 전류 (Leakage Ileak)", "Low-Bias Leakage Current (A)", "--- A", "#0369a1")
+        self.kpi_pulse = KPIReadoutCard("펄스 과도응답 (Rise / Overshoot)", "10-90% Rise Time & Overshoot (%)", "---", "#be185d")
+        self.kpi_compliance = KPIReadoutCard("Compliance / Limit 상태", "Compliance Hits & Pass/Fail", "NORMAL (0)", "#15803d")
 
-        self.chk_log_y = QCheckBox("Y축 Log(|I|) 스케일")
-        self.chk_log_y.toggled.connect(self._refresh_plot)
-        g_toolbar.addWidget(self.chk_log_y)
+        for card in (
+            self.kpi_voltage,
+            self.kpi_current,
+            self.kpi_power,
+            self.kpi_dvdi,
+            self.kpi_vth,
+            self.kpi_ileak,
+            self.kpi_pulse,
+            self.kpi_compliance,
+        ):
+            c2_layout.addWidget(card)
+        c2_layout.addStretch(1)
 
-        self.chk_dual_cursors = QCheckBox("듀얼 커서 (ΔX, ΔY, 1/R)")
-        self.chk_dual_cursors.setChecked(True)
-        self.chk_dual_cursors.toggled.connect(self._refresh_plot)
-        g_toolbar.addWidget(self.chk_dual_cursors)
+        col2_scroll.setWidget(col2_inner)
+        col2_outer.addWidget(col2_scroll)
 
-        self.lbl_cursor_readout = QLabel("커서 대기 중")
-        self.lbl_cursor_readout.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.lbl_cursor_readout.setStyleSheet(
-            "background-color: #EFF6FF; color: #0B1F3A; padding: 4px 8px; font-family: Consolas, '맑은 고딕'; font-weight: bold;"
+        # Quick Export Action Row at Bottom of Column 2
+        exp_mini = QHBoxLayout()
+        btn_csv_q = QPushButton("📄 CSV")
+        btn_csv_q.clicked.connect(self.export_csv)
+        btn_pq_q = QPushButton("⚡ Parquet/DB")
+        btn_pq_q.clicked.connect(self.export_parquet)
+        btn_img_q = QPushButton("🖼 PNG/SVG")
+        btn_img_q.clicked.connect(self.export_plot_image)
+        btn_hist_q = QPushButton("📚 이력비교")
+        btn_hist_q.clicked.connect(self.export_history_comparison)
+        for b in (btn_csv_q, btn_pq_q, btn_img_q, btn_hist_q):
+            exp_mini.addWidget(b)
+        col2_outer.addLayout(exp_mini)
+
+        col_splitter.addWidget(col2_group)
+
+        # =====================================================================
+        # COLUMN 3 (PURPLE BORDER): 3. 측정 제어 / 실시간 그래프 표현 / 데이터 테이블 (HERO PANEL)
+        # =====================================================================
+        col3_group = QGroupBox("3. 측정 제어 / 실시간 고대비 그래프 표현 / 측정 데이터 테이블 (Excel)")
+        col3_group.setObjectName("colGraph")
+        c3_layout = QVBoxLayout(col3_group)
+        c3_layout.setContentsMargins(8, 10, 8, 6)
+        c3_layout.setSpacing(6)
+
+        # Row 1: Big Colored Action Buttons (Matches Tek QuickStart Image!)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
+
+        self.btn_run = QPushButton("▶ 측정 시작 (Run)")
+        self.btn_run.setStyleSheet(
+            "background-color: #16a34a; color: white; font-weight: bold; font-size: 10pt; border: none; padding: 7px 16px; border-radius: 5px;"
         )
-        g_toolbar.addWidget(self.lbl_cursor_readout, stretch=1)
+        self.btn_run.clicked.connect(self.execute_measurement)
+        action_row.addWidget(self.btn_run, 2)
 
-        self.btn_clear_data = QPushButton("🧹 그래프·데이터 표 전체 초기화")
-        self.btn_clear_data.setToolTip("현재 그래프, 측정 데이터 표, 단일 DC 누적 기록, 이전 실행 이력(Run History) 및 장비 내부 버퍼를 모두 깨끗하게 비웁니다.")
+        btn_stop_smu = QPushButton("■ 완전 정지 (OFF)")
+        btn_stop_smu.setStyleSheet(
+            "background-color: #2563eb; color: white; font-weight: bold; font-size: 9.5pt; border: none; padding: 7px 12px; border-radius: 5px;"
+        )
+        btn_stop_smu.clicked.connect(self.emergency_stop)
+        action_row.addWidget(btn_stop_smu, 1)
+
+        self.btn_clear_data = QPushButton("🧹 초기화")
         self.btn_clear_data.setStyleSheet(
-            "background-color: #F1F5F9; color: #0F172A; border: 1px solid #94A3B8; font-weight: bold; padding: 5px 10px; border-radius: 4px;"
+            "background-color: #ffffff; color: #0f172a; font-weight: bold; border: 1px solid #94a3b8; padding: 7px 12px; border-radius: 5px;"
         )
         self.btn_clear_data.clicked.connect(self.clear_graph_and_table_data)
-        g_toolbar.addWidget(self.btn_clear_data)
+        action_row.addWidget(self.btn_clear_data, 1)
 
-        self.btn_detach_graph = QPushButton("🗗 그래프 새 창으로 분리 (Pop-out)")
+        btn_xlsx = QPushButton("📥 Excel 저장 (.xlsx)")
+        btn_xlsx.setStyleSheet(
+            "background-color: #0f766e; color: white; font-weight: bold; font-size: 9.5pt; border: none; padding: 7px 14px; border-radius: 5px;"
+        )
+        btn_xlsx.clicked.connect(self.export_excel)
+        action_row.addWidget(btn_xlsx, 1)
+
+        c3_layout.addLayout(action_row)
+
+        # Row 2: Status Line + Graph Mode + Detach Pop-out Button
+        st_row = QHBoxLayout()
+        self.lbl_state_pill = QLabel("● 상태: 대기 중 (READY)")
+        self.lbl_state_pill.setStyleSheet("color: #0f766e; font-weight: bold; font-size: 9pt;")
+        st_row.addWidget(self.lbl_state_pill)
+
+        self.lbl_sample_count = QLabel("누적 샘플: 0 pts")
+        self.lbl_sample_count.setStyleSheet("color: #334155; font-weight: bold; padding-left: 8px;")
+        st_row.addWidget(self.lbl_sample_count)
+
+        st_row.addStretch(1)
+
+        st_row.addWidget(QLabel("그래프 모드:"))
+        self.cmb_plot_view = QComboBox()
+        self.cmb_plot_view.addItems([
+            "I-V 특성 곡선 (Voltage vs Current)",
+            "시간축 파형 (Time vs Current & Voltage)",
+        ])
+        self.cmb_plot_view.currentTextChanged.connect(self._refresh_plot)
+        st_row.addWidget(self.cmb_plot_view)
+
+        self.btn_detach_graph = QPushButton("🗗 새 창 분리 (Pop-out)")
         self.btn_detach_graph.setStyleSheet(
-            "background-color: #0E7490; color: white; font-weight: bold; padding: 5px 12px; border-radius: 4px;"
+            "background-color: #0e7490; color: white; font-weight: bold; border: none; padding: 4px 10px; border-radius: 4px;"
         )
         self.btn_detach_graph.clicked.connect(self.open_detached_graph_window)
-        g_toolbar.addWidget(self.btn_detach_graph)
+        st_row.addWidget(self.btn_detach_graph)
+        c3_layout.addLayout(st_row)
 
-        g_layout.addLayout(g_toolbar)
+        # Row 3: 5 Feature Tabs inside Column 3 (Main Graph+Table Hero Tab is Tab 0)
+        self.tabs = QTabWidget()
 
-        # Side-by-side Splitter inside Tab 1: Left = Real-time Plot | Right = Live Measurement Data Table
-        tab1_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # --- TAB 1 (HERO): Dark Oscilloscope-Style High-Contrast Graph + Live Measurement Data Table ---
+        graph_tab = QWidget()
+        g_layout = QVBoxLayout(graph_tab)
+        g_layout.setContentsMargins(6, 6, 6, 6)
+        g_layout.setSpacing(5)
 
-        pg.setConfigOptions(antialias=True, background="w", foreground="k")
-        self.plot_iv = pg.PlotWidget(title="I-V / Time-Domain Characteristic Curve (LTTB Downsampled)")
-        self.plot_iv.setLabel("bottom", "Voltage", units="V")
-        self.plot_iv.setLabel("left", "Current", units="A")
-        self.plot_iv.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_iv.addLegend()
+        # Graph Tools Strip (Cursor Toggle, Log Scale, Cursor Readout)
+        g_tools = QHBoxLayout()
+        self.chk_dual_cursors = QCheckBox("➕ 듀얼 커서 (ΔX, ΔY, 1/R)")
+        self.chk_dual_cursors.setChecked(True)
+        self.chk_dual_cursors.toggled.connect(self._refresh_plot)
+        g_tools.addWidget(self.chk_dual_cursors)
 
-        self.cursor_line1 = pg.InfiniteLine(pos=0.2, angle=90, movable=True, pen=pg.mkPen("#D97706", width=1.8, style=Qt.PenStyle.DashLine))
-        self.cursor_line2 = pg.InfiniteLine(pos=0.9, angle=90, movable=True, pen=pg.mkPen("#059669", width=1.8, style=Qt.PenStyle.DashLine))
+        self.chk_log_y = QCheckBox("📈 Y축 Log(|I|) 스케일")
+        self.chk_log_y.toggled.connect(self._refresh_plot)
+        g_tools.addWidget(self.chk_log_y)
+
+        btn_autoscale = QPushButton("🔍 자동 스케일")
+        btn_autoscale.clicked.connect(lambda: self.plot_iv.autoRange())
+        g_tools.addWidget(btn_autoscale)
+
+        self.lbl_cursor_readout = QLabel("커서 대기 중 (측정 후 그래프 위 노란/초록 점선을 드래그하세요)")
+        self.lbl_cursor_readout.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_cursor_readout.setStyleSheet(
+            "background-color: #eff6ff; color: #1e3a8a; border: 1px solid #bfdbfe; border-radius: 4px; "
+            "padding: 3px 8px; font-family: Consolas, '맑은 고딕'; font-size: 8.3pt; font-weight: bold;"
+        )
+        g_tools.addWidget(self.lbl_cursor_readout, 1)
+        g_layout.addLayout(g_tools)
+
+        # Vertical Split inside Tab 1: Top = Dark Neon Plot (62%) | Bottom = Clean Live Data Table (38%)
+        # (Matches the exact top-graph + bottom-table aesthetic of the Tek QuickStart image!)
+        tab1_vsplit = QSplitter(Qt.Orientation.Vertical)
+
+        pg.setConfigOptions(antialias=True)
+        self.plot_iv = pg.PlotWidget()
+        self.plot_iv.setBackground("#0b132b")
+        self.plot_iv.setTitle(
+            "<span style='color:#e2e8f0; font-size:10pt; font-weight:bold;'>SMU 실시간 I-V / 파형 특성 그래프 (High-Contrast Dark View)</span>"
+        )
+        self.plot_iv.getAxis("bottom").setPen(pg.mkPen("#94a3b8"))
+        self.plot_iv.getAxis("bottom").setTextPen(pg.mkPen("#cbd5e1"))
+        self.plot_iv.getAxis("left").setPen(pg.mkPen("#94a3b8"))
+        self.plot_iv.getAxis("left").setTextPen(pg.mkPen("#cbd5e1"))
+        self.plot_iv.setLabel("bottom", "<span style='color:#cbd5e1;'>Voltage</span>", units="V")
+        self.plot_iv.setLabel("left", "<span style='color:#cbd5e1;'>Current</span>", units="A")
+        self.plot_iv.showGrid(x=True, y=True, alpha=0.25)
+        self.plot_iv.addLegend(labelTextColor="#f8fafc", brush=pg.mkBrush(15, 23, 42, 180))
+
+        self.cursor_line1 = pg.InfiniteLine(pos=0.2, angle=90, movable=True, pen=pg.mkPen("#facc15", width=1.8, style=Qt.PenStyle.DashLine))
+        self.cursor_line2 = pg.InfiniteLine(pos=0.9, angle=90, movable=True, pen=pg.mkPen("#4ade80", width=1.8, style=Qt.PenStyle.DashLine))
         self.cursor_line1.sigPositionChanged.connect(self._update_cursor_readout)
         self.cursor_line2.sigPositionChanged.connect(self._update_cursor_readout)
-        tab1_splitter.addWidget(self.plot_iv)
+        tab1_vsplit.addWidget(self.plot_iv)
 
-        # Docked Live Measurement Data Table right next to the graph!
-        live_tbl_box = QGroupBox("📋 실시간 측정 데이터 (인가/측정 전압 V · 전류 A · 저항 Ω · 전력 W)")
-        lt_layout = QVBoxLayout(live_tbl_box)
-        lt_layout.setContentsMargins(4, 6, 4, 4)
-        self.tbl_live_data = QTableWidget(0, 6)
+        # Bottom Live Data Table (matching Tek QuickStart clean spreadsheet style)
+        self.tbl_live_data = QTableWidget(0, 7)
+        self.tbl_live_data.setAlternatingRowColors(True)
         self.tbl_live_data.setHorizontalHeaderLabels([
-            "No.", "Time(s)", "전압 V (V)", "전류 I (A)", "저항 R (Ω)", "전력 P (W)"
+            "Step", "Node.CH", "Elapsed (s)", "측정 전압 V (V)", "측정 전류 I (A)", "측정 저항 R (Ω)", "측정 전력 P (W)"
         ])
         self.tbl_live_data.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        lt_layout.addWidget(self.tbl_live_data)
-        tab1_splitter.addWidget(live_tbl_box)
-        tab1_splitter.setSizes([680, 440])
+        tab1_vsplit.addWidget(self.tbl_live_data)
+        tab1_vsplit.setSizes([380, 210])
 
-        g_layout.addWidget(tab1_splitter, 1)
+        g_layout.addWidget(tab1_vsplit, 1)
 
-        self.lbl_metrics = QLabel("측정 대기 중 — 상단 [측정 시작] 또는 좌측 [단일 DC 즉시 측정]을 누르면 그래프와 우측 데이터 표에 측정값이 즉시 표시됩니다.")
+        self.lbl_metrics = QLabel("측정 대기 중 — [▶ 측정 시작] 또는 좌측 [⚡ 즉시 1회 측정]을 누르면 다크 고대비 그래프와 하단 데이터 표에 즉시 표시됩니다.")
         self.lbl_metrics.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.lbl_metrics.setFixedHeight(44)
+        self.lbl_metrics.setFixedHeight(32)
         self.lbl_metrics.setStyleSheet(
-            "background-color: #F8FAFC; border: 1px solid #CBD5E1; padding: 6px; font-family: Consolas, '맑은 고딕';"
+            "background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 8px; "
+            "font-family: Consolas, '맑은 고딕'; font-size: 8.3pt; color: #1e293b;"
         )
-        self.lbl_metrics.setWordWrap(True)
         g_layout.addWidget(self.lbl_metrics)
-        self.tabs.addTab(graph_tab, "📈 실시간 그래프 & 측정 데이터 표 (한눈에 보기)")
+        self.tabs.addTab(graph_tab, "📈 실시간 측정 그래프 · 데이터 테이블")
 
         # --- TAB 2: Phase 3 High-Speed Pulse, 1 MS/s Digitizer & SOA Envelope ---
         p3_tab = QWidget()
         p3_layout = QHBoxLayout(p3_tab)
-
         p3_left = QWidget()
         p3_left_layout = QVBoxLayout(p3_left)
-        grp_p3 = QGroupBox("고속 펄스 · 1 MS/s 디지타이저 & 열/SOA 설정 (2461 / 2601B-PULSE / 2651A)")
+        grp_p3 = QGroupBox("고속 펄스 · 1 MS/s 디지타이저 & 열/SOA 설정")
         p3_form = QFormLayout(grp_p3)
 
         self.spn_pulse_width_us = QDoubleSpinBox()
@@ -656,21 +912,21 @@ class SMUMainWindow(QMainWindow):
             lambda: self._validate_and_clamp_spinbox(self.spn_pulse_width_us, "pulse_width_us", "펄스 폭(µs)")
         )
         self.spn_pulse_width_us.valueChanged.connect(self.refresh_soa_chart)
-        p3_form.addRow("펄스 폭 (Pulse Width µs):", self.spn_pulse_width_us)
+        p3_form.addRow("펄스 폭 (µs):", self.spn_pulse_width_us)
 
         self.spn_pulse_period_ms = QDoubleSpinBox()
         self.spn_pulse_period_ms.setDecimals(2)
         self.spn_pulse_period_ms.setRange(0.05, 5000.0)
         self.spn_pulse_period_ms.setValue(10.0)
         self.spn_pulse_period_ms.valueChanged.connect(self.refresh_soa_chart)
-        p3_form.addRow("펄스 주기 (Pulse Period ms):", self.spn_pulse_period_ms)
+        p3_form.addRow("펄스 주기 (ms):", self.spn_pulse_period_ms)
 
         self.spn_pulse_count = QSpinBox()
         self.spn_pulse_count.setRange(1, 50000)
         self.spn_pulse_count.setValue(1)
-        p3_form.addRow("펄스 개수 (Pulse Count):", self.spn_pulse_count)
+        p3_form.addRow("펄스 개수:", self.spn_pulse_count)
 
-        self.chk_digitizer = QCheckBox("1 MS/s 고속 디지타이저 파형 캡처 활성화")
+        self.chk_digitizer = QCheckBox("1 MS/s 디지타이저 캡처")
         self.chk_digitizer.setChecked(True)
         p3_form.addRow(self.chk_digitizer)
 
@@ -678,19 +934,19 @@ class SMUMainWindow(QMainWindow):
         self.spn_sample_rate.setRange(1000, 1000000)
         self.spn_sample_rate.setSingleStep(100000)
         self.spn_sample_rate.setValue(1000000)
-        p3_form.addRow("디지타이저 샘플레이트 (S/s):", self.spn_sample_rate)
+        p3_form.addRow("샘플레이트 (S/s):", self.spn_sample_rate)
 
         self.spn_inductance_uh = QDoubleSpinBox()
         self.spn_inductance_uh.setDecimals(2)
         self.spn_inductance_uh.setRange(0.0, 3.0)
         self.spn_inductance_uh.setValue(0.5)
-        p3_form.addRow("2601B-PULSE 부하 인덕턴스 (µH):", self.spn_inductance_uh)
+        p3_form.addRow("2601B 인덕턴스 (µH):", self.spn_inductance_uh)
 
-        self.chk_fast_adc = QCheckBox("2651A Fast ADC (1µs 과도응답 캡처) 사용")
+        self.chk_fast_adc = QCheckBox("2651A Fast ADC (1µs)")
         self.chk_fast_adc.setChecked(True)
         p3_form.addRow(self.chk_fast_adc)
 
-        self.chk_sink_mode = QCheckBox("Sink 모드 (2·4사분면 전력 흡수 / 2651A Sink)")
+        self.chk_sink_mode = QCheckBox("Sink 모드 (2·4사분면)")
         self.chk_sink_mode.toggled.connect(self.refresh_soa_chart)
         p3_form.addRow(self.chk_sink_mode)
 
@@ -699,225 +955,317 @@ class SMUMainWindow(QMainWindow):
         self.spn_ambient_temp.setRange(15.0, 55.0)
         self.spn_ambient_temp.setValue(25.0)
         self.spn_ambient_temp.valueChanged.connect(self.refresh_soa_chart)
-        p3_form.addRow("주변/내부 온도 (Ambient °C):", self.spn_ambient_temp)
-
+        p3_form.addRow("주변 온도 (°C):", self.spn_ambient_temp)
         p3_left_layout.addWidget(grp_p3)
 
-        btn_run_pulse = QPushButton("⚡ 고속 펄스 & 디지타이저 즉시 측정 실행")
-        btn_run_pulse.setStyleSheet("background-color: #0070C0; color: white; font-weight: bold; padding: 8px;")
+        btn_run_pulse = QPushButton("⚡ 고속 펄스 & 디지타이저 측정 실행")
+        btn_run_pulse.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold; padding: 7px;")
         btn_run_pulse.clicked.connect(self.execute_high_speed_pulse_measurement)
         p3_left_layout.addWidget(btn_run_pulse)
 
-        self.btn_acal = QPushButton("🔧 2461 원격 자가교정 (Autocalibration ACAL) 실행")
-        self.btn_acal.setStyleSheet("background-color: #0E7490; color: white; font-weight: bold; padding: 8px;")
+        self.btn_acal = QPushButton("🔧 2461 원격 자가교정 (ACAL)")
+        self.btn_acal.setStyleSheet("background-color: #0e7490; color: white; font-weight: bold; padding: 7px;")
         self.btn_acal.clicked.connect(self.run_remote_2461_acal)
         p3_left_layout.addWidget(self.btn_acal)
 
         self.lbl_soa_status = QLabel()
         self.lbl_soa_status.setWordWrap(True)
-        self.lbl_soa_status.setStyleSheet(
-            "background-color: #EFF6FF; color: #0B1F3A; padding: 8px; border-radius: 4px; font-weight: bold;"
-        )
+        self.lbl_soa_status.setStyleSheet("background-color: #eff6ff; color: #0b1f3a; padding: 6px; border-radius: 4px; font-weight: bold;")
         p3_left_layout.addWidget(self.lbl_soa_status)
         p3_left_layout.addStretch(1)
-        p3_layout.addWidget(p3_left, stretch=2)
+        p3_layout.addWidget(p3_left, 2)
 
-        soa_box = QWidget()
-        soa_vlayout = QVBoxLayout(soa_box)
-        self.plot_soa = pg.PlotWidget(title="Safe Operating Area (SOA) Boundary & Operating Point")
-        self.plot_soa.setLabel("bottom", "Voltage |V|", units="V")
-        self.plot_soa.setLabel("left", "Current |I|", units="A")
-        self.plot_soa.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_soa.addLegend()
-        soa_vlayout.addWidget(self.plot_soa)
-        p3_layout.addWidget(soa_box, stretch=3)
+        self.plot_soa = pg.PlotWidget()
+        self.plot_soa.setBackground("#0b132b")
+        self.plot_soa.setTitle("<span style='color:#e2e8f0;'>Safe Operating Area (SOA) Boundary</span>")
+        self.plot_soa.setLabel("bottom", "<span style='color:#cbd5e1;'>Voltage |V|</span>", units="V")
+        self.plot_soa.setLabel("left", "<span style='color:#cbd5e1;'>Current |I|</span>", units="A")
+        self.plot_soa.showGrid(x=True, y=True, alpha=0.25)
+        self.plot_soa.addLegend(labelTextColor="#f8fafc")
+        p3_layout.addWidget(self.plot_soa, 3)
+        self.tabs.addTab(p3_tab, "⚡ 고속 펄스 · SOA")
 
-        self.tabs.addTab(p3_tab, "⚡ 고속 펄스·디지타이저 & SOA 검증 (Phase 3)")
-
-        # --- TAB 3: Requirement 2 & 3 Easy Parametric Waveform Generator + Arbitrary Step Editor ---
+        # --- TAB 3: Easy Parametric Waveform Generator & Arbitrary Step Editor ---
         wf_tab = QWidget()
         wf_layout = QVBoxLayout(wf_tab)
 
-        # Requirement 3: Easy Parametric Waveform Builder Box
-        grp_easy = QGroupBox(
-            "✨ 쉬운 파형 생성기 (모형·인가 레벨·Duration 시간·반복 개수 입력 → 원클릭 생성 | 반복 개수 -1 입력 시 무한 연속 출력)"
-        )
-        grp_easy.setStyleSheet("QGroupBox { font-weight: bold; color: #0B1F3A; }")
+        grp_easy = QGroupBox("✨ 쉬운 파형 원클릭 생성기 (반복 개수: ×N 또는 -1=무한 연속)")
         easy_row = QHBoxLayout(grp_easy)
-
-        easy_row.addWidget(QLabel("파형 모형:"))
         self.cmb_easy_shape = QComboBox()
         for sh in EasyWaveformShape:
             self.cmb_easy_shape.addItem(sh.value)
+        easy_row.addWidget(QLabel("모형:"))
         easy_row.addWidget(self.cmb_easy_shape)
 
-        easy_row.addWidget(QLabel("인가 레벨(High V/A):"))
         self.spn_easy_high = QDoubleSpinBox()
         self.spn_easy_high.setDecimals(4)
         self.spn_easy_high.setRange(-1100.0, 1100.0)
         self.spn_easy_high.setValue(3.3)
+        easy_row.addWidget(QLabel("High:"))
         easy_row.addWidget(self.spn_easy_high)
 
-        easy_row.addWidget(QLabel("베이스 레벨(Low V/A):"))
         self.spn_easy_low = QDoubleSpinBox()
         self.spn_easy_low.setDecimals(4)
         self.spn_easy_low.setRange(-1100.0, 1100.0)
         self.spn_easy_low.setValue(0.0)
+        easy_row.addWidget(QLabel("Low:"))
         easy_row.addWidget(self.spn_easy_low)
 
-        easy_row.addWidget(QLabel("유지 시간(Duration s):"))
         self.spn_easy_dur = QDoubleSpinBox()
         self.spn_easy_dur.setDecimals(5)
         self.spn_easy_dur.setRange(0.00001, 60.0)
         self.spn_easy_dur.setValue(0.010)
+        easy_row.addWidget(QLabel("시간(s):"))
         easy_row.addWidget(self.spn_easy_dur)
 
-        easy_row.addWidget(QLabel("반복 개수 (×N 또는 -1=무한):"))
         self.spn_easy_repeat = QSpinBox()
         self.spn_easy_repeat.setRange(-1, 100000)
-        self.spn_easy_repeat.setValue(100)
-        self.spn_easy_repeat.setToolTip("예: 100 입력 시 100개 연속 출력 | 1 입력 시 단발 출력 | -1 입력 시 무한 연속 출력")
+        self.spn_easy_repeat.setValue(10)
+        easy_row.addWidget(QLabel("반복(-1=무한):"))
         easy_row.addWidget(self.spn_easy_repeat)
 
-        self.btn_easy_generate = QPushButton("⚡ 이 조건으로 파형 즉시 생성 & 적용")
-        self.btn_easy_generate.setStyleSheet(
-            "background-color: #16A34A; color: white; font-weight: bold; padding: 6px 14px; border-radius: 4px;"
-        )
+        self.btn_easy_generate = QPushButton("⚡ 파형 즉시 생성")
+        self.btn_easy_generate.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold;")
         self.btn_easy_generate.clicked.connect(self.generate_easy_parametric_waveform)
         easy_row.addWidget(self.btn_easy_generate)
-
         wf_layout.addWidget(grp_easy)
 
-        # Requirement 2: Step Add / Delete Selected / Clear All Toolbar
         wf_toolbar = QHBoxLayout()
         btn_add_step = QPushButton("+ 스텝 추가")
-        btn_add_step.setStyleSheet("font-weight: bold;")
         btn_add_step.clicked.connect(self._add_waveform_step)
-
         self.btn_del_step = QPushButton("- 선택 스텝 삭제")
-        self.btn_del_step.setStyleSheet("background-color: #FEE2E2; color: #991B1B; font-weight: bold;")
+        self.btn_del_step.setStyleSheet("background-color: #fee2e2; color: #991b1b; font-weight: bold;")
         self.btn_del_step.clicked.connect(self._delete_selected_waveform_steps)
-
-        self.btn_clear_steps = QPushButton("🗑 전체 스텝 초기화")
+        self.btn_clear_steps = QPushButton("🗑 초기화")
         self.btn_clear_steps.clicked.connect(self._clear_all_waveform_steps)
-
-        btn_sq = QPushButton("사각파 예시")
-        btn_sq.clicked.connect(self._load_square_preset)
-        btn_tri = QPushButton("삼각파 예시")
-        btn_tri.clicked.connect(self._load_triangle_preset)
-        btn_stair = QPushButton("계단파 예시")
-        btn_stair.clicked.connect(self._load_staircase_preset)
-        btn_imp_csv = QPushButton("📂 CSV/Excel 불러오기")
+        btn_imp_csv = QPushButton("📂 CSV/Excel")
         btn_imp_csv.clicked.connect(self._import_waveform_file)
-        btn_exp_csv = QPushButton("💾 파형 CSV 저장")
+        btn_exp_csv = QPushButton("💾 CSV 저장")
         btn_exp_csv.clicked.connect(self._export_waveform_file)
-        btn_use_list = QPushButton("✔ 테이블 수정사항 프리뷰 반영")
-        btn_use_list.setStyleSheet("background-color: #0070C0; color: white; font-weight: bold;")
+        btn_use_list = QPushButton("✔ 프리뷰 반영")
+        btn_use_list.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold;")
         btn_use_list.clicked.connect(self._apply_waveform_table_to_recipe)
-
-        for b in (
-            btn_add_step,
-            self.btn_del_step,
-            self.btn_clear_steps,
-            btn_sq,
-            btn_tri,
-            btn_stair,
-            btn_imp_csv,
-            btn_exp_csv,
-            btn_use_list,
-        ):
+        for b in (btn_add_step, self.btn_del_step, self.btn_clear_steps, btn_imp_csv, btn_exp_csv, btn_use_list):
             wf_toolbar.addWidget(b)
         wf_layout.addLayout(wf_toolbar)
 
         wf_split = QSplitter(Qt.Orientation.Horizontal)
         self.tbl_waveform = QTableWidget(0, 5)
-        self.tbl_waveform.setHorizontalHeaderLabels([
-            "Step", "시간 Duration (s)", "인가 레벨 (V/A)", "Limit (A/V)", "측정 여부 (1/0)"
-        ])
+        self.tbl_waveform.setHorizontalHeaderLabels(["Step", "시간(s)", "레벨(V/A)", "Limit", "측정(1/0)"])
         self.tbl_waveform.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         wf_split.addWidget(self.tbl_waveform)
 
-        preview_box = QWidget()
-        pv_layout = QVBoxLayout(preview_box)
-        self.plot_preview = pg.PlotWidget(title="Time-Domain Waveform Preview (출력 전 시간축 파형 & 측정 포인트)")
-        self.plot_preview.setLabel("bottom", "Time", units="s")
-        self.plot_preview.setLabel("left", "Source Level", units="V/A")
-        self.plot_preview.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_preview.addLegend()
-        pv_layout.addWidget(self.plot_preview)
+        pv_box = QWidget()
+        pv_v = QVBoxLayout(pv_box)
+        self.plot_preview = pg.PlotWidget()
+        self.plot_preview.setBackground("#0b132b")
+        self.plot_preview.setTitle("<span style='color:#e2e8f0;'>Time-Domain Waveform Preview</span>")
+        self.plot_preview.setLabel("bottom", "<span style='color:#cbd5e1;'>Time</span>", units="s")
+        self.plot_preview.setLabel("left", "<span style='color:#cbd5e1;'>Level</span>", units="V/A")
+        self.plot_preview.showGrid(x=True, y=True, alpha=0.25)
+        pv_v.addWidget(self.plot_preview)
 
         self.lbl_preview_summary = QLabel()
-        self.lbl_preview_summary.setStyleSheet(
-            "background-color: #EFF6FF; color: #0B1F3A; padding: 6px; font-weight: bold;"
-        )
-        pv_layout.addWidget(self.lbl_preview_summary)
-        wf_split.addWidget(preview_box)
-        wf_split.setSizes([460, 580])
+        self.lbl_preview_summary.setStyleSheet("background-color: #eff6ff; color: #0b1f3a; padding: 5px; font-weight: bold;")
+        pv_v.addWidget(self.lbl_preview_summary)
+        wf_split.addWidget(pv_box)
         wf_layout.addWidget(wf_split)
+        self.tabs.addTab(wf_tab, "🌊 쉬운 파형 생성기 · 편집기")
 
-        self.tabs.addTab(wf_tab, "🌊 쉬운 파형 생성기 & 임의 파형 편집기")
-
-        # --- TAB 4: Requirement 7 Per-Node Independent Waveform Mode & Source Function Separation ---
+        # --- TAB 4: Multi-SMU (1~10 Nodes) & Per-Node Independent Override ---
         ch_tab = QWidget()
         ch_layout = QVBoxLayout(ch_tab)
-        ch_info = QLabel(
-            "<b>다중 장비(1~10대) & 다채널 논리 채널 매핑 + 장비별 독립 파형/소스 분리 설정:</b><br>"
-            "• 장비가 2대 이상(또는 다채널)일 때 <b>[개별 분리 설정]</b>을 체크하면 각 장비별로 <b>파형 모드(LINEAR/LIST/PULSE 등)</b>와 "
-            "<b>소스 인가 기능(VOLTAGE 전압원 vs CURRENT 전류원)</b> 및 시작·종료 레벨을 서로 다르게 독립 제어할 수 있습니다."
-        )
-        ch_info.setWordWrap(True)
-        ch_layout.addWidget(ch_info)
-
+        ch_layout.addWidget(QLabel("<b>장비 2대 이상 연결 시 [개별 설정 사용]을 체크하여 각 장비별 파형 모드 및 소스(전압/전류)를 독립 분리 설정하세요.</b>"))
         self.tbl_channels = QTableWidget(0, 9)
         self.tbl_channels.setHorizontalHeaderLabels([
-            "논리 채널 ID",
-            "TSP 경로",
-            "활성화",
-            "할당 역할(Role)",
-            "개별 분리 설정",
-            "장비별 파형 모드",
-            "장비별 소스 기능",
-            "시작~종료 (Start,Stop)",
-            "개별 Limit",
+            "논리 채널 ID", "TSP 경로", "활성화", "역할(Role)", "개별 분리", "파형 모드", "소스 기능", "시작,종료", "Limit"
         ])
         self.tbl_channels.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         ch_layout.addWidget(self.tbl_channels)
-        self.tabs.addTab(ch_tab, "🔗 다중 장비·채널별 개별 파형/소스 설정 (1~10대)")
+        self.tabs.addTab(ch_tab, "🔗 다중 장비·채널별 설정 (1~10대)")
 
-        # --- TAB 5: Reading Buffer Table ---
+        # --- TAB 5: Full Reading Buffer Table & Run History ---
         tbl_tab = QWidget()
         t_layout = QVBoxLayout(tbl_tab)
         self.table = QTableWidget(0, 8)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels([
             "Idx", "Node.CH", "Time (s)", "Voltage (V)", "Current (A)", "Resistance (Ω)", "Power (W)", "Status"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         t_layout.addWidget(self.table)
-        self.tabs.addTab(tbl_tab, "📋 내부 Reading Buffer 데이터 테이블")
+        self.tabs.addTab(tbl_tab, "📋 전체 버퍼 데이터 · 이력")
 
-        right_splitter.addWidget(self.tabs)
+        c3_layout.addWidget(self.tabs, 1)
+        col_splitter.addWidget(col3_group)
 
-        # Bottom Console: Live TSP Command Spy
-        spy_group = QGroupBox("🔍 실시간 TSP Command Spy & 에러 큐 모니터 (PC ↔ SMU 패킷 로거)")
-        spy_layout = QVBoxLayout(spy_group)
+        # Allocate wide hero width to Column 3 (Graph & Data Table) while keeping Col 1 & 2 clean and legible
+        col_splitter.setSizes([315, 295, 920])
+        main_vsplit.addWidget(col_splitter)
+
+        # ---------------------------------------------------------------------
+        # 5. BOTTOM TALKER/LISTENER INTERACTIVE COMMAND & LOG TABLE DOCK (Matches Image Bottom!)
+        # ---------------------------------------------------------------------
+        dock_frame = QFrame()
+        dock_frame.setStyleSheet(
+            "QFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        dock_v = QVBoxLayout(dock_frame)
+        dock_v.setContentsMargins(8, 5, 8, 5)
+        dock_v.setSpacing(4)
+
+        cmd_bar = QHBoxLayout()
+        lbl_tl = QLabel("💬 TekVISA Talker/Listener 명령 전송 & 통신 로그:")
+        lbl_tl.setStyleSheet("font-weight: bold; color: #0f172a; border: none;")
+        cmd_bar.addWidget(lbl_tl)
+
+        self.txt_manual_cmd = QLineEdit("*IDN?")
+        self.txt_manual_cmd.setPlaceholderText("직접 전송할 TSP 또는 SCPI 명령 입력 (예: *IDN?, *LANG?, print(smu.measure.read()))")
+        cmd_bar.addWidget(self.txt_manual_cmd, 1)
+
+        btn_write = QPushButton("📤 Write")
+        btn_write.clicked.connect(self._send_manual_write)
+        cmd_bar.addWidget(btn_write)
+
+        btn_query = QPushButton("🔍 Query (송수신)")
+        btn_query.setStyleSheet("background-color: #0e7490; color: white; font-weight: bold; border: none; padding: 4px 10px;")
+        btn_query.clicked.connect(self._send_manual_query)
+        cmd_bar.addWidget(btn_query)
+
+        btn_clear_log = QPushButton("🗑 로그 지우기")
+        btn_clear_log.clicked.connect(self._clear_spy_table)
+        cmd_bar.addWidget(btn_clear_log)
+
+        self.btn_toggle_log = QPushButton("▼ 로그 표 접기")
+        self.btn_toggle_log.clicked.connect(self._toggle_spy_table)
+        cmd_bar.addWidget(self.btn_toggle_log)
+        dock_v.addLayout(cmd_bar)
+
+        self.tbl_spy = QTableWidget(0, 5)
+        self.tbl_spy.setAlternatingRowColors(True)
+        self.tbl_spy.setHorizontalHeaderLabels([
+            "시각 (Time)", "구분 (Dir)", "리소스 (Resource)", "전송 명령 (Command)", "수신 응답 & 지연시간 (Response & Latency)"
+        ])
+        self.tbl_spy.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_spy.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_spy.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_spy.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.tbl_spy.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        dock_v.addWidget(self.tbl_spy, 1)
+
+        # Hidden alias for backward compatibility if any script inspects txt_spy
         self.txt_spy = QPlainTextEdit()
-        self.txt_spy.setReadOnly(True)
-        self.txt_spy.setFont(QFont("Consolas", 9))
-        self.txt_spy.setStyleSheet("background-color: #0B1F3A; color: #E2E8F0;")
-        spy_layout.addWidget(self.txt_spy)
-        right_splitter.addWidget(spy_group)
-        right_splitter.setSizes([660, 200])
+        self.txt_spy.setVisible(False)
 
-        main_splitter.addWidget(right_splitter)
-        main_splitter.setSizes([380, 1140])
-        root_layout.addWidget(main_splitter)
+        main_vsplit.addWidget(dock_frame)
+        main_vsplit.setSizes([660, 175])
+        root.addWidget(main_vsplit, 1)
+
+        # Bottom Status Bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("준비 완료 — SMU 모델 및 연결 상태를 확인한 뒤 [▶ 측정 시작]을 눌러주세요.")
 
     # =========================================================================
-    # Requirement 1, 4, 6, 8, 9 Handlers
+    # Talker/Listener & Top Bar Helpers
+    # =========================================================================
+
+    def _on_spy_entry(self, entry: SpyEntry) -> None:
+        self.txt_spy.appendPlainText(entry.format_line())
+        row = self.tbl_spy.rowCount()
+        if row > 300:
+            self.tbl_spy.removeRow(0)
+            row = self.tbl_spy.rowCount()
+        self.tbl_spy.insertRow(row)
+
+        ts_str = entry.timestamp.strftime("%H:%M:%S.%f")[:-3]
+        dir_map = {"TX": "WRITE", "RX": "READ", "ERR": "ERROR", "SYS": "SYSTEM"}
+        dir_lbl = dir_map.get(entry.direction, entry.direction)
+
+        c_ts = QTableWidgetItem(ts_str)
+        c_dir = QTableWidgetItem(dir_lbl)
+        c_dir.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        if entry.direction == "ERR":
+            c_dir.setForeground(QColor("#dc2626"))
+        elif entry.direction == "RX":
+            c_dir.setForeground(QColor("#047857"))
+        else:
+            c_dir.setForeground(QColor("#1d4ed8"))
+
+        c_res = QTableWidgetItem(entry.target)
+        c_cmd = QTableWidgetItem(entry.payload if entry.direction in ("TX", "SYS") else "")
+        resp_text = (
+            f"{entry.payload} ({entry.elapsed_ms:.2f} ms)"
+            if entry.direction in ("RX", "ERR")
+            else (f"VI_SUCCESS ({entry.elapsed_ms:.2f} ms)" if entry.elapsed_ms > 0 else "OK")
+        )
+        if entry.guide_ko:
+            resp_text += f" | {entry.guide_ko}"
+        c_resp = QTableWidgetItem(resp_text)
+
+        for col_i, item in enumerate((c_ts, c_dir, c_res, c_cmd, c_resp)):
+            self.tbl_spy.setItem(row, col_i, item)
+        self.tbl_spy.scrollToBottom()
+
+    def _send_manual_write(self) -> None:
+        cmd = self.txt_manual_cmd.text().strip()
+        if not cmd:
+            return
+        try:
+            self.driver.transport.write(cmd)
+            self.status_bar.showMessage(f"명령 전송 완료: {cmd}")
+        except Exception as exc:
+            self.spy.record("ERR", self.driver.profile.model, str(exc))
+
+    def _send_manual_query(self) -> None:
+        cmd = self.txt_manual_cmd.text().strip()
+        if not cmd:
+            return
+        try:
+            resp = self.driver.transport.query(cmd)
+            self.status_bar.showMessage(f"응답 수신: {resp}")
+        except Exception as exc:
+            self.spy.record("ERR", self.driver.profile.model, str(exc))
+
+    def _clear_spy_table(self) -> None:
+        self.tbl_spy.setRowCount(0)
+        self.txt_spy.clear()
+        self.spy.clear()
+
+    def _toggle_spy_table(self) -> None:
+        self._log_visible = not self._log_visible
+        self.tbl_spy.setVisible(self._log_visible)
+        self.btn_toggle_log.setText("▼ 로그 표 접기" if self._log_visible else "▲ 로그 표 펼치기")
+
+    def _quick_idn_check(self) -> None:
+        try:
+            idn = self.driver.identify()
+            QMessageBox.information(self, "장비 연결 상태 확인 (*IDN?)", f"현재 연결된 장비 응답:\n\n{idn}")
+        except Exception as exc:
+            QMessageBox.critical(self, "통신 오류", str(exc))
+
+    def _on_sim_mode_toggled(self, checked: bool) -> None:
+        self.prefer_simulator = checked
+        self._populate_top_visa_combo(self.cmb_model.currentText())
+        self._connect_driver_to_resource(self.active_resource_name, self.cmb_model.currentText())
+
+    def _reset_input_defaults(self) -> None:
+        self.cmb_sweep_type.setCurrentText(SweepType.LINEAR.value)
+        self.cmb_source_func.setCurrentText(SourceFunction.VOLTAGE.value)
+        self.spn_start.setValue(0.0)
+        self.spn_stop.setValue(1.2)
+        self.spn_points.setValue(21)
+        self.spn_delay.setValue(0.005)
+        self.spn_repeat_count.setValue(1)
+        self.spn_compliance.setValue(0.1)
+        self.spn_nplc.setValue(0.1)
+        self.status_bar.showMessage("입력 파라미터가 기본값(Default)으로 초기화되었습니다.")
+
+    # =========================================================================
+    # Connection, Manual, Detached Window, Range Clamp, Setup Save/Load
     # =========================================================================
 
     def open_connection_wizard(self) -> None:
-        """Requirement 1: Launch TEK_quickstart-style Beginner Connection & Multi-Node Test Wizard."""
         dlg = SMUConnectionWizardDialog(
             visa_mgr=self.visa_mgr,
             registry=self.registry,
@@ -965,82 +1313,23 @@ class SMUMainWindow(QMainWindow):
         try:
             transport = self.visa_mgr.open_transport_session(resource_name, model=model_name)
             self.driver = create_smu_driver(model_name, transport=transport, spy=self.spy, registry=self.registry)
+            if self.driver.is_simulated:
+                self.lbl_conn_badge.setText(f"[시뮬레이션 연결] {resource_name}")
+                self.lbl_conn_badge.setStyleSheet("color: #facc15; font-weight: bold; border: none;")
+            else:
+                self.lbl_conn_badge.setText(f"[실제 장비 연결 성공] {resource_name}")
+                self.lbl_conn_badge.setStyleSheet("color: #4ade80; font-weight: bold; border: none;")
         except Exception as exc:
             self.spy.record("ERR", model_name, f"실물 VISA 연결 실패 ({resource_name}) -> 시뮬레이터 전환: {exc}")
             self.driver = create_smu_driver(model_name, spy=self.spy, registry=self.registry)
+            self.lbl_conn_badge.setText(f"[시뮬레이터 폴백] SIM::{model_name}::INSTR")
+            self.lbl_conn_badge.setStyleSheet("color: #fb923c; font-weight: bold; border: none;")
         self.engine = SweepExecutionEngine(self.driver)
 
-    def execute_quick_single_dc_measurement(self) -> None:
-        """Apply single DC voltage/current on 2450 (or any SMU) and immediately measure V, I, R, P into Live DMM & Table."""
-        self._validate_and_clamp_spinbox(self.spn_quick_dc_level, "source_level", "단일 DC 소스 레벨")
-        self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance Limit")
-
-        p = self.driver.profile
-        s_func = SourceFunction(self.cmb_source_func.currentText())
-        m_func = MeasureFunction.CURRENT if s_func == SourceFunction.VOLTAGE else MeasureFunction.VOLTAGE
-        cfg = ChannelConfig(
-            logical_channel=LogicalChannel(node_id=1, channel_name=p.channel_names[0]),
-            source_func=s_func,
-            measure_func=m_func,
-            source_level=self.spn_quick_dc_level.value(),
-            compliance_limit=self.spn_compliance.value(),
-            nplc=self.spn_nplc.value(),
-            sense_mode=SenseMode(self.cmb_sense.currentText()),
-            output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
-        )
-        self._set_measuring_ui_state(
-            True, f"⏳ [{p.model}] 단일 DC ({cfg.source_level:g} {s_func.value}) 인가 및 1회 측정 진행 중"
-        )
-        try:
-            pt = self.driver.measure_single_dc(cfg)
-        except Exception as exc:
-            self._set_measuring_ui_state(False)
-            QMessageBox.critical(self, "단일 DC 소스/측정 오류", str(exc))
-            return
-        finally:
-            self._set_measuring_ui_state(False)
-
-        pt.index = len(self.single_dc_points) + 1
-        self.single_dc_points.append(pt)
-        r_str = f"{pt.resistance_ohm:.4e} Ω" if pt.resistance_ohm != float("inf") else "INF Ω"
-        self.lbl_live_dmm.setText(
-            f"전압(V): {pt.voltage_v:+.5f} V  |  전류(I): {pt.current_a:+.5e} A  |  "
-            f"저항(R): {r_str}  |  전력(P): {pt.power_w:+.4e} W"
-        )
-
-        # Build a MeasurementResult from accumulated single DC readings so Graph, Live Table, and Excel Export all work seamlessly
-        from datetime import datetime
-        from smu_app.analysis.iv_pulse_analyzer import analyze_measurement_points
-
-        recipe = self._build_current_recipe()
-        recipe.name = f"{p.model}_single_dc_log"
-        pts_list = list(self.single_dc_points)
-        res = MeasurementResult(
-            session_id=datetime.now().strftime("%Y%m%d_%H%M%S_DC"),
-            model=p.model,
-            recipe_name=recipe.name,
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
-            channel_config=cfg,
-            recipe=recipe,
-            points=pts_list,
-            metrics=analyze_measurement_points(pts_list, recipe),
-        )
-        self.last_result = res
-        self._refresh_plot()
-        self._populate_table(res)
-        self.lbl_metrics.setText(
-            f"[단일 DC 즉시 측정 완료 #{pt.index}] 인가={cfg.source_level:g} ({s_func.value})  ➜  "
-            f"측정 전압 V = {pt.voltage_v:+.6f} V  |  측정 전류 I = {pt.current_a:+.6e} A  |  "
-            f"저항 R = {r_str}  |  전력 P = {pt.power_w:+.5e} W"
-        )
-
     def open_current_model_manual(self) -> bool:
-        """Requirement 6: Open the reference manual PDF for the currently selected SMU model."""
         return open_model_manual_pdf(self.cmb_model.currentText(), self)
 
     def open_detached_graph_window(self) -> DetachedGraphWindow:
-        """Requirement 4: Pop out the measurement graph into an independent resizable window."""
         win = DetachedGraphWindow(
             result=self.last_result,
             run_history=self.run_history,
@@ -1052,33 +1341,32 @@ class SMUMainWindow(QMainWindow):
         return win
 
     def clear_graph_and_table_data(self) -> None:
-        """Reset all graphs, side-by-side live data table, buffer table, Live DMM, Run History, and SMU internal buffer to an empty state."""
         self.last_result = None
         self.run_history.clear()
         self.single_dc_points.clear()
-
-        # Clear main plot and cursor readout
         self.plot_iv.clear()
         self.lbl_cursor_readout.setText("커서 대기 중")
-        self.lbl_metrics.setText(
-            "초기화 완료 — 그래프 및 측정 데이터 표가 비워졌습니다. [측정 시작] 또는 [단일 DC 즉시 측정]을 눌러 새 측정을 시작하세요."
-        )
+        self.lbl_metrics.setText("초기화 완료 — 그래프 및 측정 데이터 표가 깨끗하게 비워졌습니다.")
+        self.lbl_live_dmm.setText("V: --- | I: --- | R: --- | P: ---")
+        self.lbl_state_pill.setText("● 상태: 초기화 완료 (CLEARED)")
+        self.lbl_sample_count.setText("누적 샘플: 0 pts")
+        for card, ph in [
+            (self.kpi_voltage, "--- V"),
+            (self.kpi_current, "--- A"),
+            (self.kpi_power, "--- W"),
+            (self.kpi_dvdi, "--- Ω"),
+            (self.kpi_vth, "--- V"),
+            (self.kpi_ileak, "--- A"),
+            (self.kpi_pulse, "---"),
+            (self.kpi_compliance, "NORMAL (0)"),
+        ]:
+            card.set_value(ph)
 
-        # Clear Live DMM banner
-        if hasattr(self, "lbl_live_dmm"):
-            self.lbl_live_dmm.setText("전압(V): ---   |   전류(I): ---   |   저항(R): ---   |   전력(P): ---")
-
-        # Clear side-by-side Live Measurement Table (Tab 1) and Full Reading Buffer Table (Tab 5)
-        if hasattr(self, "tbl_live_data"):
-            self.tbl_live_data.setRowCount(0)
+        self.tbl_live_data.setRowCount(0)
         self.table.setRowCount(0)
-
-        # Clear any open detached pop-out graph windows
         for dwin in list(self.detached_windows):
             if dwin.isVisible():
                 dwin.update_data(None, [])
-
-        # Clear instrument internal reading buffer (defbuffer1 / nvbuffer1)
         try:
             if self.driver.profile.is_24xx:
                 if not self.driver.is_simulated and "SCPI" in self.driver.transport.query("*LANG?").upper():
@@ -1090,37 +1378,26 @@ class SMUMainWindow(QMainWindow):
                 self.driver.transport.write(f"{pfx}.nvbuffer1.clear()")
         except Exception:
             pass
-        self.spy.record("SYS", self.driver.profile.model, "그래프·데이터 표·Run History 및 장비 내부 버퍼 전체 초기화 완료")
+        self.spy.record("SYS", self.driver.profile.model, "그래프·데이터 표·KPI·버퍼 전체 초기화 완료")
 
     def _validate_and_clamp_spinbox(self, spinbox: QDoubleSpinBox, kind: str, label_ko: str) -> tuple[float, str | None]:
-        """Requirement 8: Check input value against selected SMU limits; if exceeded, notify user and clamp to max/min."""
         p = self.driver.profile
         val = spinbox.value()
         s_func = SourceFunction(self.cmb_source_func.currentText())
         is_pulse = self.cmb_sweep_type.currentText() in (SweepType.PULSE_TRAIN.value, SweepType.PULSE_SWEEP.value)
 
         if kind == "source_level":
-            if s_func == SourceFunction.VOLTAGE:
-                max_lim = p.max_pulse_voltage_v if is_pulse else p.max_dc_voltage_v
-                unit = "V"
-            else:
-                max_lim = p.max_pulse_current_a if is_pulse else p.max_dc_current_a
-                unit = "A"
+            max_lim = (p.max_pulse_voltage_v if is_pulse else p.max_dc_voltage_v) if s_func == SourceFunction.VOLTAGE else (p.max_pulse_current_a if is_pulse else p.max_dc_current_a)
+            unit = "V" if s_func == SourceFunction.VOLTAGE else "A"
             min_lim = -max_lim
         elif kind == "compliance":
-            if s_func == SourceFunction.VOLTAGE:
-                max_lim = p.max_pulse_current_a if is_pulse else p.max_dc_current_a
-                unit = "A"
-            else:
-                max_lim = p.max_pulse_voltage_v if is_pulse else p.max_dc_voltage_v
-                unit = "V"
+            max_lim = (p.max_pulse_current_a if is_pulse else p.max_dc_current_a) if s_func == SourceFunction.VOLTAGE else (p.max_pulse_voltage_v if is_pulse else p.max_dc_voltage_v)
+            unit = "A" if s_func == SourceFunction.VOLTAGE else "V"
             min_lim = 1e-7
         elif kind == "nplc":
             min_lim, max_lim, unit = p.min_nplc, p.max_nplc, " PLC"
         elif kind == "pulse_width_us":
-            min_lim = p.min_pulse_width_s * 1e6
-            max_lim = 500000.0
-            unit = " µs"
+            min_lim, max_lim, unit = p.min_pulse_width_s * 1e6, 500000.0, " µs"
         else:
             return val, None
 
@@ -1137,7 +1414,6 @@ class SMUMainWindow(QMainWindow):
         return clamped, notice
 
     def _on_repeat_count_spin_changed(self, val: int) -> None:
-        """Requirement 3: When repeat count is set to -1, automatically switch RepeatMode to CONTINUOUS."""
         self.cmb_repeat_mode.blockSignals(True)
         if val <= 0:
             self.cmb_repeat_mode.setCurrentText(RepeatMode.CONTINUOUS.value)
@@ -1149,24 +1425,19 @@ class SMUMainWindow(QMainWindow):
         self._on_sweep_param_changed()
 
     def generate_easy_parametric_waveform(self) -> None:
-        """Requirement 3: Build waveform from simple parameters (Shape, High/Low level, Duration, x100 or -1 repeat)."""
         p = self.driver.profile
         s_func = SourceFunction(self.cmb_source_func.currentText())
         max_lim = p.max_dc_voltage_v if s_func == SourceFunction.VOLTAGE else p.max_dc_current_a
         unit = "V" if s_func == SourceFunction.VOLTAGE else "A"
 
-        high_v, notice_h = clamp_value_with_notice(
-            self.spn_easy_high.value(), -max_lim, max_lim, "쉬운 파형 High 레벨", p.model, unit
-        )
+        high_v, notice_h = clamp_value_with_notice(self.spn_easy_high.value(), -max_lim, max_lim, "쉬운 파형 High 레벨", p.model, unit)
         if notice_h:
             self.last_range_notice = notice_h
             self.spn_easy_high.setValue(high_v)
             if not self.suppress_range_popup:
                 QMessageBox.warning(self, f"{p.model} 입력 범위 초과 자동 조정", notice_h)
 
-        low_v, notice_l = clamp_value_with_notice(
-            self.spn_easy_low.value(), -max_lim, max_lim, "쉬운 파형 Low 레벨", p.model, unit
-        )
+        low_v, notice_l = clamp_value_with_notice(self.spn_easy_low.value(), -max_lim, max_lim, "쉬운 파형 Low 레벨", p.model, unit)
         if notice_l:
             self.last_range_notice = notice_l
             self.spn_easy_low.setValue(low_v)
@@ -1192,18 +1463,15 @@ class SMUMainWindow(QMainWindow):
         self.spy.record("SYS", p.model, f"쉬운 파형 생성 완료: {res.summary_ko}")
 
     def _delete_selected_waveform_steps(self) -> None:
-        """Requirement 2: Delete selected step rows from the arbitrary waveform editor table."""
         self.custom_steps = self._read_waveform_table_steps()
         selected_rows = sorted({idx.row() for idx in self.tbl_waveform.selectedIndexes()})
         if not selected_rows and self.tbl_waveform.rowCount() > 0:
-            # If no cell is highlighted, delete the last row for convenience
             selected_rows = [self.tbl_waveform.rowCount() - 1]
         self.custom_steps = WaveformBuilder.delete_steps(self.custom_steps, selected_rows)
         self._populate_waveform_table()
         self.refresh_waveform_preview()
 
     def _clear_all_waveform_steps(self) -> None:
-        """Requirement 2: Clear all steps and leave 1 default 0V baseline step."""
         self.custom_steps = [
             WaveformStep(1, duration_s=self.spn_delay.value(), level=0.0, compliance_limit=self.spn_compliance.value())
         ]
@@ -1211,10 +1479,7 @@ class SMUMainWindow(QMainWindow):
         self.refresh_waveform_preview()
 
     def save_setup_dialog(self) -> None:
-        """Requirement 9: Prompt user to save complete setup JSON file."""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "SMU 전체 설정 저장", "smu_full_setup.json", "SMU Setup JSON (*.json)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "SMU 전체 설정 저장", "smu_full_setup.json", "SMU Setup JSON (*.json)")
         if not path:
             return
         saved = self.save_setup_to_path(path, silent=False)
@@ -1253,10 +1518,7 @@ class SMUMainWindow(QMainWindow):
         return out
 
     def load_setup_dialog(self) -> None:
-        """Requirement 9: Prompt user to load and restore a saved setup JSON file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "SMU 전체 설정 불러오기", "", "SMU Setup JSON (*.json)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "SMU 전체 설정 불러오기", "", "SMU Setup JSON (*.json)")
         if not path:
             return
         self.load_setup_from_path(path, silent=False)
@@ -1327,17 +1589,27 @@ class SMUMainWindow(QMainWindow):
             self.suppress_range_popup = prev_suppress
 
     # =========================================================================
-    # Standard Internal Handlers
+    # Model Switch, Channel Table, Pulse/SOA & Execution
     # =========================================================================
-
-    def _on_spy_entry(self, entry: SpyEntry) -> None:
-        self.txt_spy.appendPlainText(entry.format_line())
 
     def _on_sweep_param_changed(self, *_) -> None:
         self.refresh_waveform_preview()
         self.refresh_soa_chart()
 
     def _on_model_changed(self, model_name: str) -> None:
+        # Highlight selected model pill button
+        for mk, btn in self.model_buttons.items():
+            is_sel = mk == model_name
+            btn.setChecked(is_sel)
+            if is_sel:
+                btn.setStyleSheet(
+                    "background-color: #2563eb; color: white; font-weight: bold; border: 1px solid #1d4ed8; padding: 5px 9px; border-radius: 5px;"
+                )
+            else:
+                btn.setStyleSheet(
+                    "background-color: #ffffff; color: #334155; font-weight: bold; border: 1px solid #cbd5e1; padding: 5px 9px; border-radius: 5px;"
+                )
+
         self._populate_top_visa_combo(model_name)
         self._connect_driver_to_resource(self.active_resource_name, model_name)
         self.combined_config = None
@@ -1352,11 +1624,15 @@ class SMUMainWindow(QMainWindow):
             self.cmb_variant.addItem(p.model)
         self.cmb_variant.blockSignals(False)
 
+        pdf = find_manual_pdf_for_model(p.model)
+        pdf_name = pdf.name if pdf else "N/A"
+        self.lbl_model_title.setText(f"⚡ {p.display_name}")
         self.lbl_spec_badge.setText(
-            f"[{p.display_name}] {p.family} | {p.channels}CH | "
-            f"DC: ±{p.max_dc_voltage_v}V / ±{p.max_dc_current_a}A ({p.max_dc_power_w}W) | "
-            f"Pulse: {p.max_pulse_current_a}A (최소 {p.min_pulse_width_s*1e6:.0f}µs)"
+            f"• 지원 인터페이스: USB (USBTMC), LAN (Raw Socket 5025), GPIB  |  최대 채널: {p.channels}CH  |  "
+            f"DC 출력: ±{p.max_dc_voltage_v}V / ±{p.max_dc_current_a}A ({p.max_dc_power_w}W)  |  "
+            f"Pulse: {p.max_pulse_current_a}A (최소 {p.min_pulse_width_s*1e6:.0f}µs)  |  매뉴얼: {pdf_name}"
         )
+
         self.chk_contact.setEnabled(p.has_contact_check)
         self.chk_neg_zero.setEnabled(p.negative_zero_bias_fix)
         self.btn_combining.setEnabled(p.combining_supported)
@@ -1366,7 +1642,6 @@ class SMUMainWindow(QMainWindow):
             if self.spn_pulse_width_us.value() < p.min_pulse_width_s * 1e6:
                 self.spn_pulse_width_us.setValue(max(p.min_pulse_width_s * 1e6, 200.0))
 
-        # Clamp existing spinbox values silently or with notification if out of new model's bounds
         self._validate_and_clamp_spinbox(self.spn_start, "source_level", "시작 레벨")
         self._validate_and_clamp_spinbox(self.spn_stop, "source_level", "종료 레벨")
         self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance Limit")
@@ -1391,14 +1666,11 @@ class SMUMainWindow(QMainWindow):
         msgs: list[str] = []
         if nodes > 1 and not p.supports_tsplink_for_variant(variant):
             msgs.append(
-                f"⚠ [SW 동기화 모드 활성] 선택된 {variant} 모델은 TSP-Link 하드웨어 트리거 미지원 모델입니다. "
-                f"{nodes}대 연동 시 소프트웨어 동기화로 동작하며 1~20ms의 시작 타이밍 편차(Skew)가 발생할 수 있습니다."
+                f"⚠ [SW 동기화 모드 활성] {variant} 모델은 TSP-Link 미지원입니다 ({nodes}대 연동 시 1~20ms Skew 발생 가능)."
             )
         if self.combined_config is not None:
             msgs.append(
-                f"⚡ [출력 결합 활성: {self.combined_config.mode.value}] "
-                f"합산 목표={self.combined_config.total_target_level} (Master {self.combined_config.master_level} + Slave {self.combined_config.slave_level}) | "
-                f"Slave 10% 마진 Compliance={self.combined_config.slave_compliance}"
+                f"⚡ [출력 결합 활성: {self.combined_config.mode.value}] 합산={self.combined_config.total_target_level} | Slave 10% 마진={self.combined_config.slave_compliance}"
             )
         if msgs:
             self.lbl_warning_banner.setText("   |   ".join(msgs))
@@ -1417,7 +1689,6 @@ class SMUMainWindow(QMainWindow):
         self._populate_logical_channel_table_widgets()
 
     def _populate_logical_channel_table_widgets(self) -> None:
-        """Requirement 7: Populate per-node / per-channel independent waveform & source function controls."""
         self.tbl_channels.setRowCount(len(self.logical_channels))
         for r, lch in enumerate(self.logical_channels):
             self.tbl_channels.setItem(r, 0, QTableWidgetItem(lch.label))
@@ -1435,7 +1706,7 @@ class SMUMainWindow(QMainWindow):
             cmb_role.currentTextChanged.connect(lambda val, idx=r: self._on_channel_role_changed(idx, val))
             self.tbl_channels.setCellWidget(r, 3, cmb_role)
 
-            chk_ind = QCheckBox("개별 설정 사용")
+            chk_ind = QCheckBox("개별 설정")
             chk_ind.setChecked(lch.independent_override)
             chk_ind.toggled.connect(lambda checked, idx=r: self._on_channel_ind_toggled(idx, checked))
             self.tbl_channels.setCellWidget(r, 4, chk_ind)
@@ -1453,9 +1724,7 @@ class SMUMainWindow(QMainWindow):
             cmb_src.currentTextChanged.connect(lambda val, idx=r: self._on_channel_src_changed(idx, val))
             self.tbl_channels.setCellWidget(r, 6, cmb_src)
 
-            self.tbl_channels.setItem(
-                r, 7, QTableWidgetItem(f"{lch.override_start_level:g}, {lch.override_stop_level:g}")
-            )
+            self.tbl_channels.setItem(r, 7, QTableWidgetItem(f"{lch.override_start_level:g}, {lch.override_stop_level:g}"))
             self.tbl_channels.setItem(r, 8, QTableWidgetItem(f"{lch.override_compliance:g}"))
 
     def _sync_logical_channels_from_table(self) -> None:
@@ -1506,7 +1775,6 @@ class SMUMainWindow(QMainWindow):
                 self.spn_nodes.setValue(2)
             self._update_sync_warning_banner()
 
-    # --- Phase 3: High-Speed Pulse, ACAL & SOA Envelope Chart ---
     def _build_pulse_digitizer_config(self) -> PulseDigitizerConfig:
         pw_s = self.spn_pulse_width_us.value() * 1e-6
         per_s = self.spn_pulse_period_ms.value() * 1e-3
@@ -1535,11 +1803,10 @@ class SMUMainWindow(QMainWindow):
         curves = SafetyAndSOAValidator.get_soa_boundary_curves(p)
 
         dc_v, dc_i = curves.get("DC", ([0.0], [0.0]))
-        self.plot_soa.plot(dc_v, dc_i, pen=pg.mkPen("#0070C0", width=2.5), name="DC SOA Boundary")
-
+        self.plot_soa.plot(dc_v, dc_i, pen=pg.mkPen("#38bdf8", width=2.5), name="DC SOA Boundary")
         if "PULSE" in curves:
             pv, pi = curves["PULSE"]
-            self.plot_soa.plot(pv, pi, pen=pg.mkPen("#059669", width=2.5, style=Qt.PenStyle.DashLine), name="Pulse Extended SOA")
+            self.plot_soa.plot(pv, pi, pen=pg.mkPen("#4ade80", width=2.5, style=Qt.PenStyle.DashLine), name="Pulse Extended SOA")
 
         recipe = self._build_current_recipe()
         cfg = ChannelConfig(logical_channel=LogicalChannel(1, p.channel_names[0]))
@@ -1548,42 +1815,24 @@ class SMUMainWindow(QMainWindow):
         recipe.pulse_period_s = p_cfg.pulse_period_s
 
         rep = SafetyAndSOAValidator.validate_soa_and_recipe(
-            p,
-            cfg,
-            recipe,
-            ambient_temp_c=p_cfg.ambient_temp_c,
-            is_sink_quadrant=p_cfg.sink_mode_enable,
+            p, cfg, recipe, ambient_temp_c=p_cfg.ambient_temp_c, is_sink_quadrant=p_cfg.sink_mode_enable
         )
-
         max_lvl = max(abs(self.spn_start.value()), abs(self.spn_stop.value()))
         comp = abs(self.spn_compliance.value())
         op_v = max_lvl if recipe.source_func == SourceFunction.VOLTAGE else comp
         op_i = comp if recipe.source_func == SourceFunction.VOLTAGE else max_lvl
 
-        pt_color = "#16A34A" if rep.passed else "#DC2626"
-        self.plot_soa.plot(
-            [op_v],
-            [op_i],
-            pen=None,
-            symbol="o",
-            symbolSize=12,
-            symbolBrush=pt_color,
-            name=f"Operating Point ({op_v:.3g}V, {op_i:.3g}A)",
-        )
+        pt_color = "#4ade80" if rep.passed else "#f87171"
+        self.plot_soa.plot([op_v], [op_i], pen=None, symbol="o", symbolSize=12, symbolBrush=pt_color, name=f"Op ({op_v:.3g}V, {op_i:.3g}A)")
 
         duty_pct = (p_cfg.pulse_width_s / max(p_cfg.pulse_period_s, p_cfg.pulse_width_s)) * 100.0
-        max_duty_pct = SafetyAndSOAValidator.compute_thermal_and_sink_max_duty(
-            p, op_v, op_i, p_cfg.ambient_temp_c, p_cfg.sink_mode_enable
-        ) * 100.0
+        max_duty_pct = SafetyAndSOAValidator.compute_thermal_and_sink_max_duty(p, op_v, op_i, p_cfg.ambient_temp_c, p_cfg.sink_mode_enable) * 100.0
         acal_st = HighSpeedPulseDigitizerEngine.check_and_run_2461_acal(p, p_cfg, execute_now=False)
-
-        status_header = "✔ [SOA & Duty Cycle 안전 검증 통과]" if rep.passed else "✖ [SOA / Duty Cycle 안전 한계 위반 차단]"
+        status_header = "✔ [SOA & Duty Cycle 안전 검증 통과]" if rep.passed else "✖ [SOA / Duty Cycle 위반]"
         err_detail = ("\n• " + "\n• ".join(rep.errors)) if rep.errors else ""
         self.lbl_soa_status.setText(
-            f"{status_header}\n"
-            f"• 동작점: |V|={op_v:.3g} V, |I|={op_i:.3g} A (전력 P={op_v*op_i:.2f} W)\n"
-            f"• 현재 펄스 Duty: {duty_pct:.2f}%  /  열·Sink 반영 최대 허용 Duty: {max_duty_pct:.2f}%\n"
-            f"• {acal_st.message}{err_detail}"
+            f"{status_header}\n• 동작점: |V|={op_v:.3g}V, |I|={op_i:.3g}A (P={op_v*op_i:.2f}W)\n"
+            f"• 펄스 Duty: {duty_pct:.2f}% / 허용: {max_duty_pct:.2f}%\n• {acal_st.message}{err_detail}"
         )
 
     def run_remote_2461_acal(self) -> None:
@@ -1602,7 +1851,7 @@ class SMUMainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
         self.execute_measurement()
 
-    # --- Arbitrary Waveform Editor Methods ---
+    # --- Waveform Table Methods ---
     def _populate_waveform_table(self) -> None:
         self.tbl_waveform.setRowCount(len(self.custom_steps))
         for r, s in enumerate(self.custom_steps):
@@ -1621,74 +1870,34 @@ class SMUMainWindow(QMainWindow):
                 lim = float(self.tbl_waveform.item(r, 3).text())
                 meas_txt = self.tbl_waveform.item(r, 4).text().strip().lower()
                 meas = meas_txt not in ("0", "false", "no", "off")
-                steps.append(
-                    WaveformStep(
-                        step_index=len(steps) + 1,
-                        duration_s=max(1e-6, dur),
-                        level=lvl,
-                        compliance_limit=lim,
-                        measure_enable=meas,
-                    )
-                )
+                steps.append(WaveformStep(len(steps) + 1, max(1e-6, dur), lvl, lim, meas))
             except Exception:
                 continue
         return steps
 
     def _load_square_preset(self) -> None:
-        self.custom_steps = WaveformBuilder.build_square_wave(
-            high_level=self.spn_stop.value(),
-            low_level=self.spn_start.value(),
-            high_time_s=self.spn_delay.value(),
-            low_time_s=self.spn_delay.value(),
-            cycles=5,
-            compliance=self.spn_compliance.value(),
-        )
+        self.custom_steps = WaveformBuilder.build_square_wave(self.spn_stop.value(), self.spn_start.value(), self.spn_delay.value(), self.spn_delay.value(), 5, self.spn_compliance.value())
         self._populate_waveform_table()
         self._apply_waveform_table_to_recipe()
 
     def _load_triangle_preset(self) -> None:
-        self.custom_steps = WaveformBuilder.build_triangle_wave(
-            min_level=self.spn_start.value(),
-            max_level=self.spn_stop.value(),
-            steps_per_half_cycle=10,
-            step_duration_s=self.spn_delay.value(),
-            cycles=2,
-            compliance=self.spn_compliance.value(),
-        )
+        self.custom_steps = WaveformBuilder.build_triangle_wave(self.spn_start.value(), self.spn_stop.value(), 10, self.spn_delay.value(), 2, self.spn_compliance.value())
         self._populate_waveform_table()
         self._apply_waveform_table_to_recipe()
 
     def _load_staircase_preset(self) -> None:
-        self.custom_steps = WaveformBuilder.build_staircase_wave(
-            start_level=self.spn_start.value(),
-            stop_level=self.spn_stop.value(),
-            num_steps=11,
-            step_duration_s=self.spn_delay.value(),
-            dual_return=True,
-            compliance=self.spn_compliance.value(),
-        )
+        self.custom_steps = WaveformBuilder.build_staircase_wave(self.spn_start.value(), self.spn_stop.value(), 11, self.spn_delay.value(), True, self.spn_compliance.value())
         self._populate_waveform_table()
         self._apply_waveform_table_to_recipe()
 
     def _add_waveform_step(self) -> None:
         self.custom_steps = self._read_waveform_table_steps()
-        next_idx = len(self.custom_steps) + 1
-        self.custom_steps.append(
-            WaveformStep(
-                step_index=next_idx,
-                duration_s=self.spn_delay.value(),
-                level=self.spn_stop.value(),
-                compliance_limit=self.spn_compliance.value(),
-                measure_enable=True,
-            )
-        )
+        self.custom_steps.append(WaveformStep(len(self.custom_steps) + 1, self.spn_delay.value(), self.spn_stop.value(), self.spn_compliance.value(), True))
         self._populate_waveform_table()
         self.refresh_waveform_preview()
 
     def _import_waveform_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "파형 CSV/Excel 파일 불러오기", "", "Waveform Files (*.csv *.xlsx *.xls)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "파형 CSV/Excel 불러오기", "", "Waveform Files (*.csv *.xlsx *.xls)")
         if not path:
             return
         try:
@@ -1699,7 +1908,7 @@ class SMUMainWindow(QMainWindow):
             QMessageBox.critical(self, "파형 임포트 오류", str(exc))
 
     def _export_waveform_file(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "파형 CSV 파일 저장", "custom_waveform.csv", "CSV Files (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(self, "파형 CSV 저장", "custom_waveform.csv", "CSV Files (*.csv)")
         if not path:
             return
         self.custom_steps = self._read_waveform_table_steps()
@@ -1719,17 +1928,11 @@ class SMUMainWindow(QMainWindow):
         per_s = self.spn_pulse_period_ms.value() * 1e-3 if hasattr(self, "spn_pulse_period_ms") else 0.010
         use_dig = self.chk_digitizer.isChecked() if hasattr(self, "chk_digitizer") else False
         sr = self.spn_sample_rate.value() if hasattr(self, "spn_sample_rate") else 1000000
-        rep_cnt = max(1, self.spn_repeat_count.value())
-
         return SweepRecipe(
             name=f"{p.model}_{self.cmb_sweep_type.currentText().lower()}",
             sweep_type=SweepType(self.cmb_sweep_type.currentText()),
             source_func=SourceFunction(self.cmb_source_func.currentText()),
-            measure_func=(
-                MeasureFunction.CURRENT
-                if self.cmb_source_func.currentText() == SourceFunction.VOLTAGE.value
-                else MeasureFunction.VOLTAGE
-            ),
+            measure_func=(MeasureFunction.CURRENT if self.cmb_source_func.currentText() == SourceFunction.VOLTAGE.value else MeasureFunction.VOLTAGE),
             start_level=self.spn_start.value(),
             stop_level=self.spn_stop.value(),
             points=self.spn_points.value(),
@@ -1739,7 +1942,7 @@ class SMUMainWindow(QMainWindow):
             pulse_width_s=pw_s,
             pulse_period_s=per_s,
             repeat_mode=RepeatMode(self.cmb_repeat_mode.currentText()),
-            repeat_count=rep_cnt,
+            repeat_count=max(1, self.spn_repeat_count.value()),
             end_Return_to_bias=self.chk_return_bias.isChecked(),
             apply_negative_zero_fix=self.chk_neg_zero.isChecked(),
             use_digitizer=use_dig,
@@ -1753,28 +1956,11 @@ class SMUMainWindow(QMainWindow):
         recipe = self._build_current_recipe()
         pv = WaveformBuilder.generate_preview(recipe)
         self.plot_preview.clear()
-        self.plot_preview.plot(
-            pv.time_s,
-            pv.level_va,
-            pen=pg.mkPen(color="#0E7490", width=2),
-            name="Source Waveform",
-        )
+        self.plot_preview.plot(pv.time_s, pv.level_va, pen=pg.mkPen(color="#38bdf8", width=2.2), name="Source")
         if len(pv.measure_times_s) > 0:
-            self.plot_preview.plot(
-                pv.measure_times_s,
-                pv.measure_levels_va,
-                pen=None,
-                symbol="o",
-                symbolSize=6,
-                symbolBrush="#DC2626",
-                name="Measure Points",
-            )
-        tot_str = "∞ (무한 연속 출력 -1)" if pv.is_infinite_continuous else f"{pv.total_duration_s:.4f} s ({pv.total_measure_points:,} pts)"
-        self.lbl_preview_summary.setText(
-            f"[파형 프리뷰 요약] 1주기 시간: {pv.single_cycle_duration_s:.4f} s ({pv.single_cycle_points} pts)  |  "
-            f"총 소요 시간/포인트: {tot_str}  |  "
-            f"종료 동작: {'Idle(0V) 복귀' if recipe.end_Return_to_bias else '마지막 레벨 Hold'}"
-        )
+            self.plot_preview.plot(pv.measure_times_s, pv.measure_levels_va, pen=None, symbol="o", symbolSize=6, symbolBrush="#f472b6", name="Measure")
+        tot_str = "∞ (무한 연속 -1)" if pv.is_infinite_continuous else f"{pv.total_duration_s:.4f}s ({pv.total_measure_points:,} pts)"
+        self.lbl_preview_summary.setText(f"[프리뷰] 1주기: {pv.single_cycle_duration_s:.4f}s ({pv.single_cycle_points} pts) | 총: {tot_str}")
 
     def _on_dut_changed(self, dut_str: str) -> None:
         if isinstance(self.driver.transport, VirtualSMUTransport):
@@ -1784,20 +1970,20 @@ class SMUMainWindow(QMainWindow):
         if isinstance(self.driver.transport, VirtualSMUTransport):
             self.driver.transport.state.interlock_engaged = checked
 
+    # --- Live Measurement Progress & Execution ---
     def _set_measuring_ui_state(self, running: bool, status_text: str = "") -> None:
-        """Toggle prominent animated progress banner, elapsed timer, and button states during active measurement."""
         self._is_measuring = running
         if running:
             self._meas_elapsed_s = 0.0
-            self.lbl_running_status.setText(status_text or "⏳ SMU 소스 출력 및 측정 진행 중입니다... (중단하려면 우측 [■ 긴급 정지] 클릭)")
+            self.lbl_running_status.setText(status_text or "⏳ SMU 소스 출력 및 측정 진행 중입니다...")
             self.lbl_elapsed_time.setText("경과 시간: 0.0 s")
-            self.progress_bar.setRange(0, 0)  # Animated indeterminate marquee
+            self.progress_bar.setRange(0, 0)
             self.frm_progress_banner.setVisible(True)
+            self.lbl_state_pill.setText("● 상태: 측정 진행 중 (RUNNING)")
+            self.lbl_state_pill.setStyleSheet("color: #d97706; font-weight: bold; font-size: 9pt;")
             self.btn_run.setEnabled(False)
             self.btn_run.setText("⏳ 측정 진행 중...")
-            self.btn_run.setStyleSheet(
-                "background-color: #D97706; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
-            )
+            self.btn_run.setStyleSheet("background-color: #d97706; color: white; font-weight: bold; font-size: 10pt; border: none; padding: 7px 16px; border-radius: 5px;")
             self.btn_quick_dc.setEnabled(False)
             self._meas_timer.start()
             QApplication.processEvents()
@@ -1805,17 +1991,15 @@ class SMUMainWindow(QMainWindow):
             self._meas_timer.stop()
             self.frm_progress_banner.setVisible(False)
             self.btn_run.setEnabled(True)
-            self.btn_run.setText("▶ 스위프/파형 측정 시작 (Run)")
-            self.btn_run.setStyleSheet(
-                "background-color: #0070C0; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
-            )
+            self.btn_run.setText("▶ 측정 시작 (Run)")
+            self.btn_run.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold; font-size: 10pt; border: none; padding: 7px 16px; border-radius: 5px;")
             self.btn_quick_dc.setEnabled(True)
 
     def _on_measurement_timer_tick(self) -> None:
         self._meas_elapsed_s += 0.2
         dots = "." * (int(self._meas_elapsed_s * 2) % 4)
         self.lbl_elapsed_time.setText(f"경과 시간: {self._meas_elapsed_s:.1f} s")
-        base_msg = self.lbl_running_status.text().split(" (경과")[0].rstrip(".")
+        base_msg = self.lbl_running_status.text().rstrip(".")
         if "측정 진행 중" in base_msg:
             self.lbl_running_status.setText(f"{base_msg}{dots}")
 
@@ -1823,23 +2007,72 @@ class SMUMainWindow(QMainWindow):
         nodes = list(range(1, self.spn_nodes.value() + 1))
         self.driver.emergency_abort_all(active_nodes=nodes)
         self._set_measuring_ui_state(False)
+        self.lbl_state_pill.setText("● 상태: 완전 정지 / 안전 출력 차단 (STOPPED)")
+        self.lbl_state_pill.setStyleSheet("color: #dc2626; font-weight: bold; font-size: 9pt;")
+        self.status_bar.showMessage(f"긴급 정지 완료: 전체 노드({nodes}) 출력이 안전하게 OFF 되었습니다.")
         QMessageBox.warning(self, "ALL STOP 실행 완료", f"전체 노드({nodes}) 출력 차단 및 트리거 강제 중단이 완료되었습니다.")
+
+    def execute_quick_single_dc_measurement(self) -> None:
+        self._validate_and_clamp_spinbox(self.spn_quick_dc_level, "source_level", "단일 DC 소스 레벨")
+        self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance Limit")
+
+        p = self.driver.profile
+        s_func = SourceFunction(self.cmb_source_func.currentText())
+        m_func = MeasureFunction.CURRENT if s_func == SourceFunction.VOLTAGE else MeasureFunction.VOLTAGE
+        cfg = ChannelConfig(
+            logical_channel=LogicalChannel(node_id=1, channel_name=p.channel_names[0]),
+            source_func=s_func,
+            measure_func=m_func,
+            source_level=self.spn_quick_dc_level.value(),
+            compliance_limit=self.spn_compliance.value(),
+            nplc=self.spn_nplc.value(),
+            sense_mode=SenseMode(self.cmb_sense.currentText()),
+            output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
+        )
+        self._set_measuring_ui_state(True, f"⏳ [{p.model}] 단일 DC ({cfg.source_level:g} {s_func.value}) 인가 및 1회 측정 진행 중")
+        try:
+            pt = self.driver.measure_single_dc(cfg)
+        except Exception as exc:
+            self._set_measuring_ui_state(False)
+            QMessageBox.critical(self, "단일 DC 소스/측정 오류", str(exc))
+            return
+        finally:
+            self._set_measuring_ui_state(False)
+
+        pt.index = len(self.single_dc_points) + 1
+        self.single_dc_points.append(pt)
+        r_str = f"{pt.resistance_ohm:.3e} Ω" if pt.resistance_ohm != float("inf") else "INF Ω"
+        self.lbl_live_dmm.setText(f"전압(V): {pt.voltage_v:+.5f} V | 전류(I): {pt.current_a:+.4e} A | 저항(R): {r_str}")
+
+        recipe = self._build_current_recipe()
+        recipe.name = f"{p.model}_single_dc_log"
+        pts_list = list(self.single_dc_points)
+        res = MeasurementResult(
+            session_id=datetime.now().strftime("%Y%m%d_%H%M%S_DC"),
+            model=p.model,
+            recipe_name=recipe.name,
+            started_at=datetime.now(),
+            completed_at=datetime.now(),
+            channel_config=cfg,
+            recipe=recipe,
+            points=pts_list,
+            metrics=analyze_measurement_points(pts_list, recipe),
+        )
+        self._on_measurement_succeeded(res)
 
     def execute_measurement(self, checked: bool = False) -> None:
         if self._is_measuring:
             return
-        # Ensure all inputs are clamped to model range before run
         self._validate_and_clamp_spinbox(self.spn_start, "source_level", "시작 레벨")
         self._validate_and_clamp_spinbox(self.spn_stop, "source_level", "종료 레벨")
         self._validate_and_clamp_spinbox(self.spn_compliance, "compliance", "Compliance Limit")
         self._sync_logical_channels_from_table()
 
         p = self.driver.profile
-        ch_name = p.channel_names[0]
         recipe = self._build_current_recipe()
         p_cfg = self._build_pulse_digitizer_config()
         cfg = ChannelConfig(
-            logical_channel=LogicalChannel(node_id=1, channel_name=ch_name),
+            logical_channel=LogicalChannel(node_id=1, channel_name=p.channel_names[0]),
             source_func=recipe.source_func,
             measure_func=recipe.measure_func,
             compliance_limit=self.spn_compliance.value(),
@@ -1848,15 +2081,11 @@ class SMUMainWindow(QMainWindow):
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
             contact_check_enabled=self.chk_contact.isChecked(),
         )
-
         tot_pts = len(recipe.generate_levels()) * max(1, recipe.repeat_count if recipe.repeat_mode == RepeatMode.FINITE else 1)
-        status_msg = (
-            f"⏳ [{p.model} | {recipe.sweep_type.value} | 총 {tot_pts:,} pts | NPLC={recipe.nplc:g}] "
-            "SMU 소스 출력 및 측정 진행 중"
+        self._set_measuring_ui_state(
+            True, f"⏳ [{p.model} | {recipe.sweep_type.value} | 총 {tot_pts:,} pts | NPLC={recipe.nplc:g}] SMU 소스 출력 및 측정 진행 중"
         )
-        self._set_measuring_ui_state(True, status_msg)
 
-        # For real physical VISA hardware, execute in background QThread so animation & ALL STOP stay 100% live!
         if not self.driver.is_simulated:
             self._meas_worker = MeasurementWorkerThread(
                 engine=self.engine,
@@ -1873,7 +2102,6 @@ class SMUMainWindow(QMainWindow):
             self._meas_worker.start()
             return
 
-        # Instant simulator path
         try:
             res = self.engine.run_measurement(
                 cfg=cfg,
@@ -1891,6 +2119,8 @@ class SMUMainWindow(QMainWindow):
 
     def _on_measurement_failed(self, err_msg: str) -> None:
         self._set_measuring_ui_state(False)
+        self.lbl_state_pill.setText("● 상태: 측정 차단 / 오류 발생")
+        self.lbl_state_pill.setStyleSheet("color: #dc2626; font-weight: bold;")
         QMessageBox.critical(self, "Pre-Flight 안전 검증 / 실행 차단", err_msg)
 
     def _on_measurement_succeeded(self, res: MeasurementResult) -> None:
@@ -1900,30 +2130,47 @@ class SMUMainWindow(QMainWindow):
         self._refresh_plot()
         self._populate_table(res)
         self.refresh_soa_chart()
+        self._update_kpi_cards(res)
 
-        # Sync any open detached pop-out graph windows automatically
+        self.lbl_state_pill.setText("● 상태: 측정 완료 / 출력 안전 OFF (DONE)")
+        self.lbl_state_pill.setStyleSheet("color: #16a34a; font-weight: bold; font-size: 9pt;")
+        self.lbl_sample_count.setText(f"누적 샘플: {len(res.points):,} pts")
+        self.status_bar.showMessage(f"{res.model} 측정 완료 ({len(res.points):,} pts) — 출력이 안전하게 OFF 되었습니다.")
+
         for dwin in list(self.detached_windows):
             if dwin.isVisible():
                 dwin.update_data(res, self.run_history)
 
         if self.chk_auto_export.isChecked():
             auto_csv = self.exporter.export_streaming_csv(res)
-            res.warnings.append(f"Auto-Export 저장 완료: {auto_csv.name}")
+            res.warnings.append(f"Auto-Export 완료: {auto_csv.name}")
 
         m = res.metrics
         vth_s = f"{m['v_threshold_v']:.3f} V" if m.get("v_threshold_v") is not None else "N/A"
         dvdi_s = f"{m['dv_di_median_ohm']:.2f} Ω" if m.get("dv_di_median_ohm") is not None else "N/A"
-        rt_s = f"{m['rise_time_10_90_s']*1e6:.1f} µs" if m.get("rise_time_10_90_s") is not None else "N/A"
-        ft_s = f"{m['fall_time_90_10_s']*1e6:.1f} µs" if m.get("fall_time_90_10_s") is not None else "N/A"
-        ov_s = f"{m.get('overshoot_pct', 0.0):.1f}%"
-        warn_s = f" | 알림: {'; '.join(res.warnings)}" if res.warnings else ""
         self.lbl_metrics.setText(
-            f"[측정 완료: {len(res.points):,} pts | 모드: {res.recipe.acquisition_mode.value}]  "
-            f"V: [{m['v_min']:.3f}V ~ {m['v_max']:.3f}V] | I_max: {m['i_max']:.4e}A (Top: {m.get('pulse_top_i', 0.0):.4e}A) | "
-            f"Vth: {vth_s} | dV/dI: {dvdi_s} | "
-            f"펄스 Rise(10-90%): {rt_s} | Fall: {ft_s} | Overshoot: {ov_s} | "
-            f"Compliance: {m['compliance_hit_count']}건{warn_s}"
+            f"[측정 완료: {len(res.points):,} pts] V: [{m['v_min']:.3f}~{m['v_max']:.3f}V] | "
+            f"I_max: {m['i_max']:.4e}A | Vth: {vth_s} | dV/dI: {dvdi_s} | Compliance: {m['compliance_hit_count']}건"
         )
+
+    def _update_kpi_cards(self, res: MeasurementResult) -> None:
+        m = res.metrics
+        if not m or m.get("count", 0) == 0:
+            return
+        self.kpi_voltage.set_value(f"{m['v_min']:.3f} ~ {m['v_max']:.3f} V")
+        self.kpi_current.set_value(f"{m['i_max']:.3e} A")
+        self.kpi_power.set_value(f"{m.get('p_max_w', 0.0):.3e} W")
+        dvdi = m.get("dv_di_median_ohm")
+        self.kpi_dvdi.set_value(f"{dvdi:.2e} Ω" if dvdi is not None else "N/A")
+        vth = m.get("v_threshold_v")
+        self.kpi_vth.set_value(f"{vth:.3f} V" if vth is not None else "N/A")
+        ileak = m.get("i_leakage_a")
+        self.kpi_ileak.set_value(f"{ileak:.3e} A" if ileak is not None else "N/A")
+        rt = m.get("rise_time_10_90_s")
+        ov = m.get("overshoot_pct", 0.0)
+        self.kpi_pulse.set_value(f"{rt*1e6:.1f}µs / {ov:.1f}%" if rt is not None else f"Ov {ov:.1f}%")
+        hits = m.get("compliance_hit_count", 0)
+        self.kpi_compliance.set_value(f"TRIPPED ({hits})" if hits > 0 else "NORMAL (0)")
 
     def _current_plot_xy(self, pts) -> tuple[np.ndarray, np.ndarray, bool]:
         is_time = self.cmb_plot_view.currentIndex() == 1
@@ -1942,26 +2189,35 @@ class SMUMainWindow(QMainWindow):
             prev = self.run_history[-2]
             px, py, _ = self._current_plot_xy(prev.points)
             dx, dy = lttb_downsample(px, py, threshold=1500)
-            self.plot_iv.plot(dx, dy, pen=pg.mkPen(color="#94A3B8", width=1, style=Qt.PenStyle.DashLine), name="Prev Run")
+            self.plot_iv.plot(dx, dy, pen=pg.mkPen(color="#64748b", width=1.4, style=Qt.PenStyle.DashLine), name="Prev Run")
 
         pts = self.last_result.points
-        x, y, is_time = self._current_plot_xy(pts)
-        self.plot_iv.setLabel("bottom", "Time" if is_time else "Voltage", units="s" if is_time else "V")
-        self.plot_iv.setLabel("left", "log10(|Current|)" if self.chk_log_y.isChecked() else "Current", units="log A" if self.chk_log_y.isChecked() else "A")
+        x_all, y_all, is_time = self._current_plot_xy(pts)
+        self.plot_iv.setLabel("bottom", "<span style='color:#cbd5e1;'>Time</span>" if is_time else "<span style='color:#cbd5e1;'>Voltage</span>", units="s" if is_time else "V")
+        self.plot_iv.setLabel("left", "<span style='color:#cbd5e1;'>log10(|I|)</span>" if self.chk_log_y.isChecked() else "<span style='color:#cbd5e1;'>Current</span>", units="log A" if self.chk_log_y.isChecked() else "A")
 
-        dx, dy = lttb_downsample(x, y, threshold=2000)
-        self.plot_iv.plot(
-            dx,
-            dy,
-            pen=pg.mkPen(color="#0070C0", width=2),
-            symbol="o",
-            symbolSize=4,
-            symbolBrush="#0070C0",
-            name=f"{self.last_result.model} ({len(pts)} pts)",
-        )
+        # Group by Node.Channel for crisp multi-channel neon plotting
+        grouped: dict[str, list] = {}
+        for p in pts:
+            grouped.setdefault(f"Node{p.node_id}.{p.channel}", []).append(p)
 
-        if self.chk_dual_cursors.isChecked() and len(x) >= 2:
-            x_min, x_max = float(np.min(x)), float(np.max(x))
+        for idx_c, (ch_key, ch_pts) in enumerate(grouped.items()):
+            cx, cy, _ = self._current_plot_xy(ch_pts)
+            dx, dy = lttb_downsample(cx, cy, threshold=2000)
+            col = self._SERIES_COLORS[idx_c % len(self._SERIES_COLORS)]
+            self.plot_iv.plot(
+                dx,
+                dy,
+                pen=pg.mkPen(color=col, width=2.4),
+                symbol="o",
+                symbolSize=5,
+                symbolBrush=col,
+                symbolPen=pg.mkPen("#0b132b", width=0.5),
+                name=f"{ch_key} ({len(ch_pts)} pts)",
+            )
+
+        if self.chk_dual_cursors.isChecked() and len(x_all) >= 2:
+            x_min, x_max = float(np.min(x_all)), float(np.max(x_all))
             span = max(1e-9, x_max - x_min)
             self.cursor_line1.setPos(x_min + 0.25 * span)
             self.cursor_line2.setPos(x_min + 0.75 * span)
@@ -1973,48 +2229,43 @@ class SMUMainWindow(QMainWindow):
         if not self.last_result or not self.last_result.points:
             return
         x, y, is_time = self._current_plot_xy(self.last_result.points)
-        c = compute_dual_cursor_metrics(
-            x, y, float(self.cursor_line1.value()), float(self.cursor_line2.value())
-        )
-        x_unit = "s" if is_time else "V"
+        c = compute_dual_cursor_metrics(x, y, float(self.cursor_line1.value()), float(self.cursor_line2.value()))
+        xu = "s" if is_time else "V"
         self.lbl_cursor_readout.setText(
-            f"[듀얼 커서] C1=({c.x1:.4g}{x_unit}, {c.y1:.4e}A) | C2=({c.x2:.4g}{x_unit}, {c.y2:.4e}A) | "
-            f"ΔX={c.delta_x:.4g}{x_unit}, ΔY={c.delta_y:.4e}A | "
-            f"기울기(Slope)={c.slope:.3e} | 등가저항(1/Slope)={c.inverse_slope_ohm:.3e} Ω"
+            f"[커서] C1=({c.x1:.4g}{xu}, {c.y1:.3e}A) | C2=({c.x2:.4g}{xu}, {c.y2:.3e}A) | "
+            f"ΔX={c.delta_x:.4g}{xu}, ΔY={c.delta_y:.3e}A | 1/Slope={c.inverse_slope_ohm:.3e} Ω"
         )
 
     def _populate_table(self, res: MeasurementResult) -> None:
         display_pts = res.points[:2000]
-        comp_bg = QColor("#FEF3C7")
+        comp_bg = QColor("#fef3c7")
 
-        # Update last point onto the top-left Live DMM banner as well
-        if display_pts and hasattr(self, "lbl_live_dmm"):
+        if display_pts:
             last_p = display_pts[-1]
-            r_str = f"{last_p.resistance_ohm:.4e} Ω" if last_p.resistance_ohm != float("inf") else "INF Ω"
+            r_str = f"{last_p.resistance_ohm:.3e} Ω" if last_p.resistance_ohm != float("inf") else "INF Ω"
             self.lbl_live_dmm.setText(
-                f"전압(V): {last_p.voltage_v:+.5f} V  |  전류(I): {last_p.current_a:+.5e} A  |  "
-                f"저항(R): {r_str}  |  전력(P): {last_p.power_w:+.4e} W"
+                f"전압(V): {last_p.voltage_v:+.5f} V | 전류(I): {last_p.current_a:+.4e} A | 저항(R): {r_str}"
             )
 
-        # 1. Populate Docked Side-by-Side Live Measurement Table in Tab 1 (right next to the graph)
-        if hasattr(self, "tbl_live_data"):
-            self.tbl_live_data.setRowCount(len(display_pts))
-            for r, p in enumerate(display_pts):
-                live_vals = [
-                    str(p.index),
-                    f"{p.timestamp_s:.4f}",
-                    f"{p.voltage_v:+.5f}",
-                    f"{p.current_a:+.5e}",
-                    f"{p.resistance_ohm:.3e}" if p.resistance_ohm != float("inf") else "INF",
-                    f"{p.power_w:+.4e}",
-                ]
-                for c, text in enumerate(live_vals):
-                    it = QTableWidgetItem(text)
-                    if p.in_compliance:
-                        it.setBackground(comp_bg)
-                    self.tbl_live_data.setItem(r, c, it)
+        # Tab 1 bottom spreadsheet table
+        self.tbl_live_data.setRowCount(len(display_pts))
+        for r, p in enumerate(display_pts):
+            live_vals = [
+                str(p.index),
+                f"N{p.node_id}.{p.channel}",
+                f"{p.timestamp_s:.4f}",
+                f"{p.voltage_v:+.5f}",
+                f"{p.current_a:+.5e}",
+                f"{p.resistance_ohm:.3e}" if p.resistance_ohm != float("inf") else "INF",
+                f"{p.power_w:+.4e}",
+            ]
+            for c, text in enumerate(live_vals):
+                it = QTableWidgetItem(text)
+                if p.in_compliance:
+                    it.setBackground(comp_bg)
+                self.tbl_live_data.setItem(r, c, it)
 
-        # 2. Populate Full Reading Buffer Table in Tab 5
+        # Tab 5 full buffer table
         self.table.setRowCount(len(display_pts))
         for r, p in enumerate(display_pts):
             status_str = "COMPLIANCE" if p.in_compliance else ("PASS" if p.limit_passed else "FAIL")
@@ -2034,8 +2285,8 @@ class SMUMainWindow(QMainWindow):
                     item.setBackground(comp_bg)
                 self.table.setItem(r, c, item)
 
+    # --- Persistent Export Folder & Multi-Format Export ---
     def choose_export_directory(self) -> Path | None:
-        """Prompt user to select a folder for saving reports/data and remember it across restarts."""
         chosen = QFileDialog.getExistingDirectory(
             self,
             "리포트 및 측정 데이터 저장 폴더 선택 (선택한 위치는 계속 유지됩니다)",
@@ -2079,9 +2330,7 @@ class SMUMainWindow(QMainWindow):
             QMessageBox.information(self, "데이터 없음", "비교할 Run History 측정 이력이 없습니다.")
             return
         path = self.exporter.export_run_history_comparison_excel(self.run_history)
-        QMessageBox.information(
-            self, "Run History 비교 리포트 생성 완료", f"총 {len(self.run_history)}회 실행 비교 Excel 리포트가 저장되었습니다:\n{path}"
-        )
+        QMessageBox.information(self, "Run History 비교 리포트 완료", f"총 {len(self.run_history)}회 실행 비교 Excel 리포트가 저장되었습니다:\n{path}")
 
     def export_csv(self) -> None:
         if not self.last_result:
@@ -2096,9 +2345,7 @@ class SMUMainWindow(QMainWindow):
             return
         pq_path = self.exporter.export_parquet(self.last_result)
         db_path = self.exporter.export_sqlite_archive(self.last_result)
-        QMessageBox.information(
-            self, "Parquet & SQLite 저장 완료", f"고속 아카이브 파일이 생성되었습니다:\n• Parquet: {pq_path}\n• SQLite: {db_path}"
-        )
+        QMessageBox.information(self, "Parquet & SQLite 저장 완료", f"고속 아카이브 파일이 생성되었습니다:\n• Parquet: {pq_path}\n• SQLite: {db_path}")
 
     def export_plot_image(self) -> None:
         if not self.last_result:
@@ -2107,9 +2354,7 @@ class SMUMainWindow(QMainWindow):
         mode = "TIME" if self.cmb_plot_view.currentIndex() == 1 else "IV"
         png_path = self.exporter.export_plot_image(self.last_result, fmt="png", mode=mode, history_overlays=self.run_history[:-1])
         svg_path = self.exporter.export_plot_image(self.last_result, fmt="svg", mode=mode, history_overlays=self.run_history[:-1])
-        QMessageBox.information(
-            self, "그래프 이미지 저장 완료", f"PNG 및 SVG 고해상도 그래프가 저장되었습니다:\n• PNG: {png_path}\n• SVG: {svg_path}"
-        )
+        QMessageBox.information(self, "그래프 이미지 저장 완료", f"PNG 및 SVG 고해상도 그래프가 저장되었습니다:\n• PNG: {png_path}\n• SVG: {svg_path}")
 
 
 def launch_app(show_startup_wizard: bool = True) -> int:
