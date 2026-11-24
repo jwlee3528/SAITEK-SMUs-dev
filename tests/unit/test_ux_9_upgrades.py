@@ -244,6 +244,62 @@ class TestUX9Upgrades(unittest.TestCase):
         self.assertEqual(win.table.rowCount(), 0)
         self.assertIn("---", win.lbl_live_dmm.text())
 
+    def test_req11_persistent_export_folder_and_tek_quickstart_excel_report_format(self) -> None:
+        import openpyxl
+
+        orig_dir = SetupPersistenceManager.get_saved_export_dir()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                custom_export_dir = Path(tmpdir) / "user_chosen_reports"
+                win = SMUMainWindow(show_startup_wizard=False, prefer_simulator=True)
+                win.suppress_range_popup = True
+
+                # 1. User sets custom export folder -> must persist across new window/session instances
+                win.set_export_directory(custom_export_dir, persist=True)
+                self.assertEqual(SetupPersistenceManager.get_saved_export_dir(), custom_export_dir.resolve())
+                self.assertEqual(win.txt_export_dir.text(), str(custom_export_dir.resolve()))
+
+                win2 = SMUMainWindow(show_startup_wizard=False, prefer_simulator=True)
+                self.assertEqual(win2.exporter.output_dir, custom_export_dir.resolve())
+
+                # 2. Execute measurement & export Tek QuickStart formatted Excel report
+                win.execute_measurement()
+                assert win.last_result is not None
+                xlsx_path = win.exporter.export_excel_report(
+                    win.last_result,
+                    resource_addr="USB0::0x05E6::0x2450::04584348::INSTR",
+                    is_simulation=False,
+                    idn_string="KEITHLEY INSTRUMENTS,MODEL 2450,04584348,1.7.12",
+                )
+                self.assertTrue(xlsx_path.exists())
+                self.assertEqual(xlsx_path.parent, custom_export_dir.resolve())
+
+                wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+                expected_sheets = [
+                    "1_Summary_Checklist",
+                    "2_Input_Configuration",
+                    "3_Measured_Data",
+                    "4_Waveform_Trace",
+                    "5_Graph_Report",
+                ]
+                self.assertEqual(wb.sheetnames, expected_sheets)
+
+                # Verify Checklist rows in 1_Summary_Checklist
+                ws1 = wb["1_Summary_Checklist"]
+                col_a_vals = [str(ws1.cell(r, 1).value or "") for r in range(1, ws1.max_row + 1)]
+                self.assertTrue(any("리모트 준비 사항 항목" in v for v in col_a_vals))
+                self.assertTrue(any("1단계:" in v for v in col_a_vals))
+
+                # Verify Statistics rows (평균 Mean, 최댓값 Max, 최솟값 Min, 표준편차 StdDev) in 3_Measured_Data
+                ws3 = wb["3_Measured_Data"]
+                col_a_data = [str(ws3.cell(r, 1).value or "") for r in range(1, ws3.max_row + 1)]
+                self.assertIn("평균 (Mean)", col_a_data)
+                self.assertIn("최댓값 (Max)", col_a_data)
+                self.assertIn("최솟값 (Min)", col_a_data)
+                self.assertIn("표준편차 (StdDev)", col_a_data)
+        finally:
+            SetupPersistenceManager.set_saved_export_dir(orig_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -27,13 +27,16 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -94,6 +97,51 @@ from smu_app.ui.connection_wizard import (
 from smu_app.ui.detached_graph_dialog import DetachedGraphWindow
 
 
+class MeasurementWorkerThread(QThread):
+    """Background worker thread so the UI stays responsive, animates the progress bar,
+    updates elapsed time, and keeps the ALL STOP button clickable during long hardware sweeps.
+    """
+
+    finished_ok = pyqtSignal(object)   # MeasurementResult
+    failed_err = pyqtSignal(str)
+
+    def __init__(
+        self,
+        engine: SweepExecutionEngine,
+        cfg: ChannelConfig,
+        recipe: SweepRecipe,
+        node_count: int,
+        specific_variant: str | None,
+        logical_channels: list[LogicalChannel],
+        combined_config: CombinedOutputConfig | None,
+        pulse_config: PulseDigitizerConfig | None,
+    ) -> None:
+        super().__init__()
+        self.engine = engine
+        self.cfg = cfg
+        self.recipe = recipe
+        self.node_count = node_count
+        self.specific_variant = specific_variant
+        self.logical_channels = list(logical_channels)
+        self.combined_config = combined_config
+        self.pulse_config = pulse_config
+
+    def run(self) -> None:
+        try:
+            res = self.engine.run_measurement(
+                cfg=self.cfg,
+                recipe=self.recipe,
+                node_count=self.node_count,
+                specific_variant=self.specific_variant,
+                logical_channels=self.logical_channels,
+                combined_config=self.combined_config,
+                pulse_config=self.pulse_config,
+            )
+            self.finished_ok.emit(res)
+        except Exception as exc:
+            self.failed_err.emit(str(exc))
+
+
 class SMUMainWindow(QMainWindow):
     """Main Desktop GUI for Tektronix/Keithley 8-Model SMU Control (Phase 1~3 + 9 UX Upgrades)."""
 
@@ -117,7 +165,14 @@ class SMUMainWindow(QMainWindow):
         self.detached_windows: list[DetachedGraphWindow] = []
         self.suppress_range_popup: bool = False
         self.last_range_notice: str = ""
+        self.last_checklist_status: list[dict] = []
         self._geometry_locked: bool = False
+        self._meas_worker: MeasurementWorkerThread | None = None
+        self._meas_elapsed_s: float = 0.0
+        self._meas_timer = QTimer(self)
+        self._meas_timer.setInterval(200)
+        self._meas_timer.timeout.connect(self._on_measurement_timer_tick)
+        self._is_measuring: bool = False
 
         # Requirement 5: Automatic screen resolution adaptation (locked once at startup so measurement never resizes window)
         avail = get_available_screen_geometry(self)
@@ -142,10 +197,12 @@ class SMUMainWindow(QMainWindow):
         self.refresh_waveform_preview()
         self.refresh_soa_chart()
 
-        # Requirement 9: Auto-restore last saved session setup if present
+        # Requirement 9: Auto-restore last saved session setup if present, but ALWAYS keep user_preferences.json export_dir as source of truth
         if SetupPersistenceManager.DEFAULT_LAST_SESSION_PATH.exists():
             try:
+                saved_pref_dir = SetupPersistenceManager.get_saved_export_dir()
                 self.load_setup_from_path(SetupPersistenceManager.DEFAULT_LAST_SESSION_PATH, silent=True)
+                self.set_export_directory(saved_pref_dir, persist=False)
             except Exception:
                 pass
 
@@ -279,6 +336,38 @@ class SMUMainWindow(QMainWindow):
         )
         self.lbl_warning_banner.setVisible(False)
         root_layout.addWidget(self.lbl_warning_banner)
+
+        # Live Measurement In-Progress Status Bar (Visible prominently while measuring!)
+        self.frm_progress_banner = QFrame()
+        self.frm_progress_banner.setStyleSheet(
+            "QFrame { background-color: #DBEAFE; border: 1px solid #2563EB; border-radius: 5px; }"
+        )
+        self.frm_progress_banner.setFixedHeight(36)
+        pb_layout = QHBoxLayout(self.frm_progress_banner)
+        pb_layout.setContentsMargins(10, 3, 10, 3)
+        pb_layout.setSpacing(10)
+
+        self.lbl_running_status = QLabel("⏳ 측정 진행 중...")
+        self.lbl_running_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_running_status.setStyleSheet("color: #1E3A8A; font-weight: bold; font-size: 9.5pt; border: none;")
+        pb_layout.addWidget(self.lbl_running_status, stretch=2)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate animated marquee while instrument sweeps
+        self.progress_bar.setFixedWidth(260)
+        self.progress_bar.setFixedHeight(18)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #93C5FD; border-radius: 4px; background-color: white; text-align: center; }"
+            "QProgressBar::chunk { background-color: #2563EB; border-radius: 3px; }"
+        )
+        pb_layout.addWidget(self.progress_bar)
+
+        self.lbl_elapsed_time = QLabel("경과 시간: 0.0 s")
+        self.lbl_elapsed_time.setStyleSheet("color: #1D4ED8; font-family: Consolas, '맑은 고딕'; font-weight: bold; border: none;")
+        pb_layout.addWidget(self.lbl_elapsed_time)
+
+        self.frm_progress_banner.setVisible(False)
+        root_layout.addWidget(self.frm_progress_banner)
 
         # 2. Main Splitter
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -423,11 +512,27 @@ class SMUMainWindow(QMainWindow):
 
         grp_exp = QGroupBox("3. 대용량 데이터 저장 & 리포트 (Export)")
         exp_layout = QVBoxLayout(grp_exp)
+
+        # Persistent Export Folder Selector Row
+        dir_row = QHBoxLayout()
+        self.txt_export_dir = QLineEdit(str(self.exporter.output_dir))
+        self.txt_export_dir.setReadOnly(True)
+        self.txt_export_dir.setToolTip(f"현재 파일 저장 폴더: {self.exporter.output_dir}")
+        self.txt_export_dir.setStyleSheet("background-color: #F8FAFC; color: #0F172A; font-size: 8.5pt;")
+        dir_row.addWidget(self.txt_export_dir, 1)
+
+        self.btn_choose_export_dir = QPushButton("📁 저장 위치 변경")
+        self.btn_choose_export_dir.setToolTip("리포트 및 데이터 파일이 저장될 폴더를 선택합니다 (선택한 위치는 계속 기억됩니다).")
+        self.btn_choose_export_dir.setStyleSheet("background-color: #E0F2FE; color: #0369A1; font-weight: bold; padding: 4px 8px;")
+        self.btn_choose_export_dir.clicked.connect(self.choose_export_directory)
+        dir_row.addWidget(self.btn_choose_export_dir)
+        exp_layout.addLayout(dir_row)
+
         self.chk_auto_export = QCheckBox("측정 완료 시 자동 백업 (Auto-Export CSV)")
         self.chk_auto_export.setChecked(False)
         exp_layout.addWidget(self.chk_auto_export)
 
-        btn_xlsx = QPushButton("📊 구조화 Excel (.xlsx + 차트) 저장")
+        btn_xlsx = QPushButton("📊 구조화 Excel (.xlsx + 체크리스트/설정/통계/그래프) 저장")
         btn_xlsx.clicked.connect(self.export_excel)
         btn_hist_xlsx = QPushButton("📚 Run History 다중 비교 Excel 리포트")
         btn_hist_xlsx.clicked.connect(self.export_history_comparison)
@@ -822,6 +927,10 @@ class SMUMainWindow(QMainWindow):
         )
         if dlg.exec() == dlg.DialogCode.Accepted:
             self.active_resource_name = dlg.selected_resource
+            self.last_checklist_status = [
+                {"title": c.item_spec.title, "checked": c.checkbox.isChecked()}
+                for c in dlg.step_cards
+            ]
             self.cmb_model.setCurrentText(dlg.selected_model)
             self.spn_nodes.setValue(dlg.selected_nodes)
             self._connect_driver_to_resource(self.active_resource_name, dlg.selected_model)
@@ -879,11 +988,17 @@ class SMUMainWindow(QMainWindow):
             sense_mode=SenseMode(self.cmb_sense.currentText()),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
         )
+        self._set_measuring_ui_state(
+            True, f"⏳ [{p.model}] 단일 DC ({cfg.source_level:g} {s_func.value}) 인가 및 1회 측정 진행 중"
+        )
         try:
             pt = self.driver.measure_single_dc(cfg)
         except Exception as exc:
+            self._set_measuring_ui_state(False)
             QMessageBox.critical(self, "단일 DC 소스/측정 오류", str(exc))
             return
+        finally:
+            self._set_measuring_ui_state(False)
 
         pt.index = len(self.single_dc_points) + 1
         self.single_dc_points.append(pt)
@@ -1131,6 +1246,7 @@ class SMUMainWindow(QMainWindow):
             recipe=recipe,
             pulse_config=p_cfg,
             logical_channels=self.logical_channels,
+            export_dir=self.exporter.output_dir,
         )
         if not silent:
             self.spy.record("SYS", p.model, f"Full Setup Saved -> {out}")
@@ -1199,6 +1315,9 @@ class SMUMainWindow(QMainWindow):
             if data["logical_channels"]:
                 self.logical_channels = data["logical_channels"]
                 self._populate_logical_channel_table_widgets()
+
+            if data.get("export_dir"):
+                self.set_export_directory(data["export_dir"], persist=True)
 
             self.refresh_waveform_preview()
             self.refresh_soa_chart()
@@ -1665,12 +1784,50 @@ class SMUMainWindow(QMainWindow):
         if isinstance(self.driver.transport, VirtualSMUTransport):
             self.driver.transport.state.interlock_engaged = checked
 
+    def _set_measuring_ui_state(self, running: bool, status_text: str = "") -> None:
+        """Toggle prominent animated progress banner, elapsed timer, and button states during active measurement."""
+        self._is_measuring = running
+        if running:
+            self._meas_elapsed_s = 0.0
+            self.lbl_running_status.setText(status_text or "⏳ SMU 소스 출력 및 측정 진행 중입니다... (중단하려면 우측 [■ 긴급 정지] 클릭)")
+            self.lbl_elapsed_time.setText("경과 시간: 0.0 s")
+            self.progress_bar.setRange(0, 0)  # Animated indeterminate marquee
+            self.frm_progress_banner.setVisible(True)
+            self.btn_run.setEnabled(False)
+            self.btn_run.setText("⏳ 측정 진행 중...")
+            self.btn_run.setStyleSheet(
+                "background-color: #D97706; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
+            )
+            self.btn_quick_dc.setEnabled(False)
+            self._meas_timer.start()
+            QApplication.processEvents()
+        else:
+            self._meas_timer.stop()
+            self.frm_progress_banner.setVisible(False)
+            self.btn_run.setEnabled(True)
+            self.btn_run.setText("▶ 스위프/파형 측정 시작 (Run)")
+            self.btn_run.setStyleSheet(
+                "background-color: #0070C0; color: white; font-weight: bold; font-size: 12.5px; padding: 7px 14px;"
+            )
+            self.btn_quick_dc.setEnabled(True)
+
+    def _on_measurement_timer_tick(self) -> None:
+        self._meas_elapsed_s += 0.2
+        dots = "." * (int(self._meas_elapsed_s * 2) % 4)
+        self.lbl_elapsed_time.setText(f"경과 시간: {self._meas_elapsed_s:.1f} s")
+        base_msg = self.lbl_running_status.text().split(" (경과")[0].rstrip(".")
+        if "측정 진행 중" in base_msg:
+            self.lbl_running_status.setText(f"{base_msg}{dots}")
+
     def emergency_stop(self) -> None:
         nodes = list(range(1, self.spn_nodes.value() + 1))
         self.driver.emergency_abort_all(active_nodes=nodes)
+        self._set_measuring_ui_state(False)
         QMessageBox.warning(self, "ALL STOP 실행 완료", f"전체 노드({nodes}) 출력 차단 및 트리거 강제 중단이 완료되었습니다.")
 
-    def execute_measurement(self) -> None:
+    def execute_measurement(self, checked: bool = False) -> None:
+        if self._is_measuring:
+            return
         # Ensure all inputs are clamped to model range before run
         self._validate_and_clamp_spinbox(self.spn_start, "source_level", "시작 레벨")
         self._validate_and_clamp_spinbox(self.spn_stop, "source_level", "종료 레벨")
@@ -1691,6 +1848,32 @@ class SMUMainWindow(QMainWindow):
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
             contact_check_enabled=self.chk_contact.isChecked(),
         )
+
+        tot_pts = len(recipe.generate_levels()) * max(1, recipe.repeat_count if recipe.repeat_mode == RepeatMode.FINITE else 1)
+        status_msg = (
+            f"⏳ [{p.model} | {recipe.sweep_type.value} | 총 {tot_pts:,} pts | NPLC={recipe.nplc:g}] "
+            "SMU 소스 출력 및 측정 진행 중"
+        )
+        self._set_measuring_ui_state(True, status_msg)
+
+        # For real physical VISA hardware, execute in background QThread so animation & ALL STOP stay 100% live!
+        if not self.driver.is_simulated:
+            self._meas_worker = MeasurementWorkerThread(
+                engine=self.engine,
+                cfg=cfg,
+                recipe=recipe,
+                node_count=self.spn_nodes.value(),
+                specific_variant=self._selected_variant_code(),
+                logical_channels=self.logical_channels,
+                combined_config=self.combined_config,
+                pulse_config=p_cfg,
+            )
+            self._meas_worker.finished_ok.connect(self._on_measurement_succeeded)
+            self._meas_worker.failed_err.connect(self._on_measurement_failed)
+            self._meas_worker.start()
+            return
+
+        # Instant simulator path
         try:
             res = self.engine.run_measurement(
                 cfg=cfg,
@@ -1702,9 +1885,16 @@ class SMUMainWindow(QMainWindow):
                 pulse_config=p_cfg,
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Pre-Flight 안전 검증 / 실행 차단", str(exc))
+            self._on_measurement_failed(str(exc))
             return
+        self._on_measurement_succeeded(res)
 
+    def _on_measurement_failed(self, err_msg: str) -> None:
+        self._set_measuring_ui_state(False)
+        QMessageBox.critical(self, "Pre-Flight 안전 검증 / 실행 차단", err_msg)
+
+    def _on_measurement_succeeded(self, res: MeasurementResult) -> None:
+        self._set_measuring_ui_state(False)
         self.last_result = res
         self.run_history.append(res)
         self._refresh_plot()
@@ -1844,12 +2034,45 @@ class SMUMainWindow(QMainWindow):
                     item.setBackground(comp_bg)
                 self.table.setItem(r, c, item)
 
+    def choose_export_directory(self) -> Path | None:
+        """Prompt user to select a folder for saving reports/data and remember it across restarts."""
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "리포트 및 측정 데이터 저장 폴더 선택 (선택한 위치는 계속 유지됩니다)",
+            str(self.exporter.output_dir),
+        )
+        if not chosen:
+            return None
+        return self.set_export_directory(chosen, persist=True)
+
+    def set_export_directory(self, folder_path: Path | str, persist: bool = True) -> Path:
+        new_dir = self.exporter.set_output_dir(folder_path, persist=persist)
+        if hasattr(self, "txt_export_dir"):
+            self.txt_export_dir.setText(str(new_dir))
+            self.txt_export_dir.setToolTip(f"현재 파일 저장 폴더: {new_dir}")
+        self.spy.record("SYS", self.driver.profile.model, f"파일 저장 폴더 위치 설정 및 기억 완료: {new_dir}")
+        return new_dir
+
     def export_excel(self) -> None:
         if not self.last_result:
             QMessageBox.information(self, "데이터 없음", "먼저 측정을 실행해 주세요.")
             return
-        path = self.exporter.export_excel_report(self.last_result)
-        QMessageBox.information(self, "Excel 저장 완료", f"구조화된 Excel 리포트가 생성되었습니다:\n{path}")
+        try:
+            idn_str = self.driver.identify()
+        except Exception:
+            idn_str = f"KEITHLEY INSTRUMENTS,MODEL {self.last_result.model}"
+        path = self.exporter.export_excel_report(
+            self.last_result,
+            resource_addr=self.active_resource_name,
+            is_simulation=self.driver.is_simulated,
+            idn_string=idn_str,
+            checklist_status=self.last_checklist_status or None,
+        )
+        QMessageBox.information(
+            self,
+            "Tek QuickStart 양식 Excel 리포트 저장 완료",
+            f"체크리스트 // 입력 설정값 // 측정 데이터(+통계) // 그래프 시트가 포함된 Excel 리포트가 생성되었습니다:\n{path}",
+        )
 
     def export_history_comparison(self) -> None:
         if not self.run_history:

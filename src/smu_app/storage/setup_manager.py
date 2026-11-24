@@ -88,11 +88,52 @@ def clamp_value_with_notice(
 
 
 class SetupPersistenceManager:
-    """Requirement 9: Save and load complete application state (instrument, nodes, per-node configs, waveform, pulse)."""
+    """Requirement 9 & Export Folder Persistence: Save and load complete application state + user-selected export folder."""
 
     DEFAULT_LAST_SESSION_PATH = (
         Path(__file__).resolve().parents[3] / "configs" / "last_session_setup.json"
     )
+    DEFAULT_PREFS_PATH = (
+        Path(__file__).resolve().parents[3] / "configs" / "user_preferences.json"
+    )
+    DEFAULT_EXPORT_DIR = (
+        Path(__file__).resolve().parents[3] / "data" / "processed"
+    )
+
+    @classmethod
+    def get_saved_export_dir(cls) -> Path:
+        """Return the user's remembered export directory (creates it if needed)."""
+        if cls.DEFAULT_PREFS_PATH.exists():
+            try:
+                with open(cls.DEFAULT_PREFS_PATH, "r", encoding="utf-8") as fh:
+                    prefs = json.load(fh)
+                saved = prefs.get("export_dir")
+                if saved:
+                    p = Path(saved)
+                    p.mkdir(parents=True, exist_ok=True)
+                    return p
+            except Exception:
+                pass
+        cls.DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        return cls.DEFAULT_EXPORT_DIR
+
+    @classmethod
+    def set_saved_export_dir(cls, export_dir: Path | str) -> Path:
+        """Persist the user-chosen export folder across application restarts."""
+        p = Path(export_dir).resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        cls.DEFAULT_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        prefs: dict[str, Any] = {}
+        if cls.DEFAULT_PREFS_PATH.exists():
+            try:
+                with open(cls.DEFAULT_PREFS_PATH, "r", encoding="utf-8") as fh:
+                    prefs = json.load(fh)
+            except Exception:
+                prefs = {}
+        prefs["export_dir"] = str(p)
+        with open(cls.DEFAULT_PREFS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(prefs, fh, ensure_ascii=False, indent=2)
+        return p
 
     @classmethod
     def save_full_setup(
@@ -107,11 +148,15 @@ class SetupPersistenceManager:
         recipe: SweepRecipe,
         pulse_config: PulseDigitizerConfig,
         logical_channels: list[LogicalChannel],
+        export_dir: Path | str | None = None,
     ) -> Path:
         path = Path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if export_dir is not None:
+            cls.set_saved_export_dir(export_dir)
         payload: dict[str, Any] = {
             "version": "3.0",
+            "export_dir": str(export_dir or cls.get_saved_export_dir()),
             "model": model,
             "variant": variant,
             "node_count": int(node_count),
@@ -234,7 +279,14 @@ class SetupPersistenceManager:
             for c in raw.get("logical_channels", [])
         ]
 
+        if raw.get("export_dir"):
+            try:
+                cls.set_saved_export_dir(raw["export_dir"])
+            except Exception:
+                pass
+
         return {
+            "export_dir": str(raw.get("export_dir", cls.get_saved_export_dir())),
             "model": str(raw.get("model", "2450")),
             "variant": str(raw.get("variant", "2450")),
             "node_count": int(raw.get("node_count", 1)),
