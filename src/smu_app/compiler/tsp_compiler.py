@@ -85,7 +85,12 @@ class TSP24xxGenerator(BaseTSPCompiler):
         cmds = self.compile_channel_setup(recipe_override_cfg(cfg, recipe), profile)
         levels = recipe.generate_levels()
         count = len(levels)
-        repeat_n = max(1, recipe.repeat_count if recipe.repeat_mode == RepeatMode.FINITE else 1)
+        if recipe.repeat_mode == RepeatMode.CONTINUOUS:
+            repeat_n = 0  # Keithley 24xx TSP: count = 0 means infinite continuous sweep until abort/ALL STOP
+        elif recipe.repeat_mode == RepeatMode.FINITE:
+            repeat_n = max(1, recipe.repeat_count)
+        else:
+            repeat_n = 1
 
         if recipe.sweep_type == SweepType.LINEAR:
             dual_const = f"{pfx}.ON" if False else f"{pfx}.OFF"

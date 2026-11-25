@@ -229,7 +229,9 @@ class TestUX9Upgrades(unittest.TestCase):
         self.assertEqual(win.tbl_live_data.rowCount(), 1)
         self.assertIn("전압(V):", win.lbl_live_dmm.text())
 
-        # 2. Execute Full Sweep Measurement
+        # 2. Execute Full Linear Sweep Measurement
+        win.cmb_sweep_type.setCurrentText("LINEAR")
+        win.spn_points.setValue(21)
         win.execute_measurement()
         size_after_sweep = (win.width(), win.height())
         self.assertEqual(size_before, size_after_sweep, "Window size/resolution must NEVER change after Sweep measurement")

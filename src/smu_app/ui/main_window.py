@@ -93,7 +93,9 @@ from smu_app.ui.connection_wizard import (
     open_model_manual_pdf,
 )
 from smu_app.ui.detached_graph_dialog import DetachedGraphWindow
+from smu_app.ui.multi_channel_dialog import MultiChannelConfigDialog
 from smu_app.ui.theme import GLOBAL_STYLESHEET
+from smu_app.ui.waveform_editor_dialog import WaveformEditorDialog
 
 
 class MeasurementWorkerThread(QThread):
@@ -142,34 +144,35 @@ class MeasurementWorkerThread(QThread):
 
 
 class KPIReadoutCard(QFrame):
-    """Tek QuickStart-inspired live measurement KPI readout card (Middle Column)."""
+    """Compact high-readability live measurement KPI readout card for GUI ver0.1."""
 
     def __init__(self, title: str, subtitle: str, unit_placeholder: str, accent_color: str = "#0284c7") -> None:
         super().__init__()
         self.setStyleSheet(
-            "KPIReadoutCard { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; }"
+            "KPIReadoutCard { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 5px; }"
         )
         v = QVBoxLayout(self)
-        v.setContentsMargins(8, 6, 8, 6)
+        v.setContentsMargins(6, 4, 6, 4)
         v.setSpacing(2)
 
-        top = QHBoxLayout()
         lbl_t = QLabel(f"● {title}")
-        lbl_t.setStyleSheet("font-weight: bold; color: #0f172a; font-size: 8.8pt; border: none;")
-        top.addWidget(lbl_t, 1)
+        lbl_t.setStyleSheet("font-weight: bold; color: #0f172a; font-size: 8.3pt; border: none;")
+        v.addWidget(lbl_t)
+
+        val_row = QHBoxLayout()
+        val_row.setContentsMargins(0, 0, 0, 0)
+        lbl_sub = QLabel(subtitle)
+        lbl_sub.setStyleSheet("color: #64748b; font-size: 7.4pt; border: none;")
+        val_row.addWidget(lbl_sub, 1)
 
         self.lbl_value = QLabel(unit_placeholder)
         self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.lbl_value.setStyleSheet(
             f"background-color: #f0fdf4; color: {accent_color}; border: 1px solid #bbf7d0; "
-            "border-radius: 4px; padding: 2px 8px; font-family: Consolas, '맑은 고딕'; font-weight: bold; font-size: 9.2pt;"
+            "border-radius: 4px; padding: 1px 6px; font-family: Consolas, '맑은 고딕'; font-weight: bold; font-size: 8.6pt;"
         )
-        top.addWidget(self.lbl_value)
-        v.addLayout(top)
-
-        lbl_sub = QLabel(subtitle)
-        lbl_sub.setStyleSheet("color: #64748b; font-size: 7.8pt; border: none;")
-        v.addWidget(lbl_sub)
+        val_row.addWidget(self.lbl_value)
+        v.addLayout(val_row)
 
     def set_value(self, text: str) -> None:
         self.lbl_value.setText(text)
@@ -216,7 +219,7 @@ class SMUMainWindow(QMainWindow):
         avail = get_available_screen_geometry(self)
         self.is_compact_screen = avail.width() <= 1600 or avail.height() <= 920
         self.setWindowTitle(
-            f"Tektronix & Keithley SMU Advanced Suite v3.0 (화면 자동 최적화: {avail.width()}×{avail.height()})"
+            f"Tektronix & Keithley SMU Advanced Suite v3.0 ({avail.width()}×{avail.height()})"
         )
 
         self._build_ui()
@@ -325,7 +328,11 @@ class SMUMainWindow(QMainWindow):
 
         self.chk_sim_mode = QCheckBox("시뮬레이션 모드")
         self.chk_sim_mode.setChecked(self.prefer_simulator)
-        self.chk_sim_mode.setStyleSheet("color: #f8fafc; font-weight: bold; border: none;")
+        self.chk_sim_mode.setStyleSheet(
+            "QCheckBox { background-color: transparent; color: #f8fafc; font-weight: bold; spacing: 5px; padding: 2px 4px; border: none; }"
+            "QCheckBox::indicator { width: 15px; height: 15px; background-color: #ffffff; border: 1.5px solid #94a3b8; border-radius: 3px; }"
+            "QCheckBox::indicator:checked { background-color: #38bdf8; border: 1.5px solid #ffffff; }"
+        )
         self.chk_sim_mode.toggled.connect(self._on_sim_mode_toggled)
         h_layout.addWidget(self.chk_sim_mode)
 
@@ -442,20 +449,36 @@ class SMUMainWindow(QMainWindow):
 
         ic_top.addStretch(1)
 
+        self.btn_waveform_popup = QPushButton("🌊 파형 편집기")
+        self.btn_waveform_popup.setToolTip("쉬운 파형 생성기 & 임의 파형 스텝 편집기 전용 창을 엽니다.")
+        self.btn_waveform_popup.setStyleSheet(
+            "background-color: #eef2ff; color: #3730a3; border: 1px solid #a5b4fc; font-weight: bold; padding: 5px 10px;"
+        )
+        self.btn_waveform_popup.clicked.connect(self.open_waveform_editor_dialog)
+        ic_top.addWidget(self.btn_waveform_popup)
+
+        self.btn_multich_popup = QPushButton("🔗 다중 장비·채널 설정")
+        self.btn_multich_popup.setToolTip("1~10대 다중 장비 및 채널별 개별 파형/소스 분리 설정 창을 엽니다.")
+        self.btn_multich_popup.setStyleSheet(
+            "background-color: #f0fdf4; color: #166534; border: 1px solid #86efac; font-weight: bold; padding: 5px 10px;"
+        )
+        self.btn_multich_popup.clicked.connect(self.open_multi_channel_dialog)
+        ic_top.addWidget(self.btn_multich_popup)
+
+        self.btn_combining = QPushButton("⚡ 출력 결합")
+        self.btn_combining.setStyleSheet("background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; font-weight: bold; padding: 5px 10px;")
+        self.btn_combining.clicked.connect(self.open_combining_wizard)
+        ic_top.addWidget(self.btn_combining)
+
         self.btn_manual = QPushButton("📖 PDF 매뉴얼")
-        self.btn_manual.setStyleSheet("background-color: #1e3a5f; color: white; font-weight: bold; padding: 5px 12px;")
+        self.btn_manual.setStyleSheet("background-color: #1e3a5f; color: white; font-weight: bold; padding: 5px 10px;")
         self.btn_manual.clicked.connect(self.open_current_model_manual)
         ic_top.addWidget(self.btn_manual)
 
-        self.btn_idn_check = QPushButton("🔍 상태 확인 (*IDN?)")
-        self.btn_idn_check.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 5px 12px;")
+        self.btn_idn_check = QPushButton("🔍 *IDN? 확인")
+        self.btn_idn_check.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 5px 10px;")
         self.btn_idn_check.clicked.connect(self._quick_idn_check)
         ic_top.addWidget(self.btn_idn_check)
-
-        self.btn_combining = QPushButton("⚡ 출력 결합 마법사")
-        self.btn_combining.setStyleSheet("background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; font-weight: bold; padding: 5px 12px;")
-        self.btn_combining.clicked.connect(self.open_combining_wizard)
-        ic_top.addWidget(self.btn_combining)
 
         ic_v.addLayout(ic_top)
 
@@ -985,106 +1008,27 @@ class SMUMainWindow(QMainWindow):
         p3_layout.addWidget(self.plot_soa, 3)
         self.tabs.addTab(p3_tab, "⚡ 고속 펄스 · SOA")
 
-        # --- TAB 3: Easy Parametric Waveform Generator & Arbitrary Step Editor ---
-        wf_tab = QWidget()
-        wf_layout = QVBoxLayout(wf_tab)
-
-        grp_easy = QGroupBox("✨ 쉬운 파형 원클릭 생성기 (반복 개수: ×N 또는 -1=무한 연속)")
-        easy_row = QHBoxLayout(grp_easy)
+        # --- Core 3 Tabs Only (Optional Waveform Editor & Multi-Channel Setup are now dedicated popup dialogs!) ---
+        # Hidden compatibility widgets kept for backward compatibility with headless test scripts
         self.cmb_easy_shape = QComboBox()
         for sh in EasyWaveformShape:
             self.cmb_easy_shape.addItem(sh.value)
-        easy_row.addWidget(QLabel("모형:"))
-        easy_row.addWidget(self.cmb_easy_shape)
-
         self.spn_easy_high = QDoubleSpinBox()
-        self.spn_easy_high.setDecimals(4)
         self.spn_easy_high.setRange(-1100.0, 1100.0)
         self.spn_easy_high.setValue(3.3)
-        easy_row.addWidget(QLabel("High:"))
-        easy_row.addWidget(self.spn_easy_high)
-
         self.spn_easy_low = QDoubleSpinBox()
-        self.spn_easy_low.setDecimals(4)
         self.spn_easy_low.setRange(-1100.0, 1100.0)
         self.spn_easy_low.setValue(0.0)
-        easy_row.addWidget(QLabel("Low:"))
-        easy_row.addWidget(self.spn_easy_low)
-
         self.spn_easy_dur = QDoubleSpinBox()
-        self.spn_easy_dur.setDecimals(5)
         self.spn_easy_dur.setRange(0.00001, 60.0)
         self.spn_easy_dur.setValue(0.010)
-        easy_row.addWidget(QLabel("시간(s):"))
-        easy_row.addWidget(self.spn_easy_dur)
-
         self.spn_easy_repeat = QSpinBox()
         self.spn_easy_repeat.setRange(-1, 100000)
         self.spn_easy_repeat.setValue(10)
-        easy_row.addWidget(QLabel("반복(-1=무한):"))
-        easy_row.addWidget(self.spn_easy_repeat)
-
-        self.btn_easy_generate = QPushButton("⚡ 파형 즉시 생성")
-        self.btn_easy_generate.setStyleSheet("background-color: #16a34a; color: white; font-weight: bold;")
-        self.btn_easy_generate.clicked.connect(self.generate_easy_parametric_waveform)
-        easy_row.addWidget(self.btn_easy_generate)
-        wf_layout.addWidget(grp_easy)
-
-        wf_toolbar = QHBoxLayout()
-        btn_add_step = QPushButton("+ 스텝 추가")
-        btn_add_step.clicked.connect(self._add_waveform_step)
-        self.btn_del_step = QPushButton("- 선택 스텝 삭제")
-        self.btn_del_step.setStyleSheet("background-color: #fee2e2; color: #991b1b; font-weight: bold;")
-        self.btn_del_step.clicked.connect(self._delete_selected_waveform_steps)
-        self.btn_clear_steps = QPushButton("🗑 초기화")
-        self.btn_clear_steps.clicked.connect(self._clear_all_waveform_steps)
-        btn_imp_csv = QPushButton("📂 CSV/Excel")
-        btn_imp_csv.clicked.connect(self._import_waveform_file)
-        btn_exp_csv = QPushButton("💾 CSV 저장")
-        btn_exp_csv.clicked.connect(self._export_waveform_file)
-        btn_use_list = QPushButton("✔ 프리뷰 반영")
-        btn_use_list.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold;")
-        btn_use_list.clicked.connect(self._apply_waveform_table_to_recipe)
-        for b in (btn_add_step, self.btn_del_step, self.btn_clear_steps, btn_imp_csv, btn_exp_csv, btn_use_list):
-            wf_toolbar.addWidget(b)
-        wf_layout.addLayout(wf_toolbar)
-
-        wf_split = QSplitter(Qt.Orientation.Horizontal)
         self.tbl_waveform = QTableWidget(0, 5)
-        self.tbl_waveform.setHorizontalHeaderLabels(["Step", "시간(s)", "레벨(V/A)", "Limit", "측정(1/0)"])
-        self.tbl_waveform.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        wf_split.addWidget(self.tbl_waveform)
-
-        pv_box = QWidget()
-        pv_v = QVBoxLayout(pv_box)
-        self.plot_preview = pg.PlotWidget()
-        self.plot_preview.setBackground("#0b132b")
-        self.plot_preview.setTitle("<span style='color:#e2e8f0;'>Time-Domain Waveform Preview</span>")
-        self.plot_preview.setLabel("bottom", "<span style='color:#cbd5e1;'>Time</span>", units="s")
-        self.plot_preview.setLabel("left", "<span style='color:#cbd5e1;'>Level</span>", units="V/A")
-        self.plot_preview.showGrid(x=True, y=True, alpha=0.25)
-        pv_v.addWidget(self.plot_preview)
-
-        self.lbl_preview_summary = QLabel()
-        self.lbl_preview_summary.setStyleSheet("background-color: #eff6ff; color: #0b1f3a; padding: 5px; font-weight: bold;")
-        pv_v.addWidget(self.lbl_preview_summary)
-        wf_split.addWidget(pv_box)
-        wf_layout.addWidget(wf_split)
-        self.tabs.addTab(wf_tab, "🌊 쉬운 파형 생성기 · 편집기")
-
-        # --- TAB 4: Multi-SMU (1~10 Nodes) & Per-Node Independent Override ---
-        ch_tab = QWidget()
-        ch_layout = QVBoxLayout(ch_tab)
-        ch_layout.addWidget(QLabel("<b>장비 2대 이상 연결 시 [개별 설정 사용]을 체크하여 각 장비별 파형 모드 및 소스(전압/전류)를 독립 분리 설정하세요.</b>"))
         self.tbl_channels = QTableWidget(0, 9)
-        self.tbl_channels.setHorizontalHeaderLabels([
-            "논리 채널 ID", "TSP 경로", "활성화", "역할(Role)", "개별 분리", "파형 모드", "소스 기능", "시작,종료", "Limit"
-        ])
-        self.tbl_channels.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        ch_layout.addWidget(self.tbl_channels)
-        self.tabs.addTab(ch_tab, "🔗 다중 장비·채널별 설정 (1~10대)")
 
-        # --- TAB 5: Full Reading Buffer Table & Run History ---
+        # --- TAB 3 (Core): Full Reading Buffer Table & Run History ---
         tbl_tab = QWidget()
         t_layout = QVBoxLayout(tbl_tab)
         self.table = QTableWidget(0, 8)
@@ -1099,8 +1043,14 @@ class SMUMainWindow(QMainWindow):
         c3_layout.addWidget(self.tabs, 1)
         col_splitter.addWidget(col3_group)
 
-        # Allocate wide hero width to Column 3 (Graph & Data Table) while keeping Col 1 & 2 clean and legible
-        col_splitter.setSizes([315, 295, 920])
+        # GUI ver0.1 Layout Optimization:
+        # Shrink Column 1 (Input: 265px) and Column 2 (Live KPI: 225px) and maximize Column 3 (Graph & Measurement Data: 1120px)
+        col1_group.setMinimumWidth(240)
+        col2_group.setMinimumWidth(205)
+        col_splitter.setStretchFactor(0, 0)
+        col_splitter.setStretchFactor(1, 0)
+        col_splitter.setStretchFactor(2, 1)
+        col_splitter.setSizes([265, 225, 1120])
         main_vsplit.addWidget(col_splitter)
 
         # ---------------------------------------------------------------------
@@ -1158,7 +1108,9 @@ class SMUMainWindow(QMainWindow):
         self.txt_spy.setVisible(False)
 
         main_vsplit.addWidget(dock_frame)
-        main_vsplit.setSizes([660, 175])
+        main_vsplit.setStretchFactor(0, 1)
+        main_vsplit.setStretchFactor(1, 0)
+        main_vsplit.setSizes([745, 115])
         root.addWidget(main_vsplit, 1)
 
         # Bottom Status Bar
@@ -1249,6 +1201,14 @@ class SMUMainWindow(QMainWindow):
         self._populate_top_visa_combo(self.cmb_model.currentText())
         self._connect_driver_to_resource(self.active_resource_name, self.cmb_model.currentText())
 
+    def _reset_waveform_badge_to_default(self) -> None:
+        """Reset top Waveform Editor button badge back to inactive default style."""
+        if hasattr(self, "btn_waveform_popup"):
+            self.btn_waveform_popup.setText("🌊 파형 편집기")
+            self.btn_waveform_popup.setStyleSheet(
+                "background-color: #eef2ff; color: #3730a3; border: 1px solid #a5b4fc; font-weight: bold; padding: 5px 10px;"
+            )
+
     def _reset_input_defaults(self) -> None:
         self.cmb_sweep_type.setCurrentText(SweepType.LINEAR.value)
         self.cmb_source_func.setCurrentText(SourceFunction.VOLTAGE.value)
@@ -1259,7 +1219,10 @@ class SMUMainWindow(QMainWindow):
         self.spn_repeat_count.setValue(1)
         self.spn_compliance.setValue(0.1)
         self.spn_nplc.setValue(0.1)
-        self.status_bar.showMessage("입력 파라미터가 기본값(Default)으로 초기화되었습니다.")
+        self.custom_steps = WaveformBuilder.build_staircase_wave(0.0, 1.2, 13, 0.005, dual_return=True)
+        self._populate_waveform_table()
+        self._reset_waveform_badge_to_default()
+        self.status_bar.showMessage("입력 파라미터 및 커스텀 파형 설정이 기본값(Default LINEAR)으로 초기화되었습니다.")
 
     # =========================================================================
     # Connection, Manual, Detached Window, Range Clamp, Setup Save/Load
@@ -1593,6 +1556,8 @@ class SMUMainWindow(QMainWindow):
     # =========================================================================
 
     def _on_sweep_param_changed(self, *_) -> None:
+        if hasattr(self, "cmb_sweep_type") and self.cmb_sweep_type.currentText() != SweepType.LIST.value:
+            self._reset_waveform_badge_to_default()
         self.refresh_waveform_preview()
         self.refresh_soa_chart()
 
@@ -1767,6 +1732,70 @@ class SMUMainWindow(QMainWindow):
         if 0 <= idx < len(self.logical_channels):
             self.logical_channels[idx].override_source_func = src_val
 
+    def open_waveform_editor_dialog(self) -> None:
+        """Open dedicated spacious popup dialog for Easy Waveform Generator & Arbitrary Step Editor."""
+        dlg = WaveformEditorDialog(
+            profile=self.driver.profile,
+            source_func=SourceFunction(self.cmb_source_func.currentText()),
+            initial_steps=self.custom_steps,
+            default_delay_s=self.spn_delay.value(),
+            default_compliance=self.spn_compliance.value(),
+            initial_repeat_count=self.spn_repeat_count.value(),
+            initial_repeat_mode=RepeatMode(self.cmb_repeat_mode.currentText()),
+            end_return_to_bias=self.chk_return_bias.isChecked(),
+            parent=self,
+        )
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            if dlg.reset_to_default_requested:
+                self._reset_input_defaults()
+                self.spy.record("SYS", self.driver.profile.model, "커스텀 파형 설정 해제 -> 기본 LINEAR 모드 복귀")
+                return
+            self.custom_steps = dlg.result_steps
+            self._populate_waveform_table()
+            self.cmb_sweep_type.setCurrentText(SweepType.LIST.value)
+            self.cmb_repeat_mode.setCurrentText(dlg.result_repeat_mode.value)
+            self.spn_repeat_count.blockSignals(True)
+            self.spn_repeat_count.setValue(
+                -1 if dlg.result_repeat_mode == RepeatMode.CONTINUOUS else dlg.result_repeat_count
+            )
+            self.spn_repeat_count.blockSignals(False)
+            self.btn_waveform_popup.setText(f"🌊 파형 편집기 ({dlg.summary_badge_text})")
+            self.btn_waveform_popup.setStyleSheet(
+                "background-color: #4f46e5; color: white; border: 1px solid #3730a3; font-weight: bold; padding: 5px 10px;"
+            )
+            self.status_bar.showMessage(f"커스텀 파형 적용 완료: {dlg.summary_badge_text}")
+            self.spy.record("SYS", self.driver.profile.model, f"커스텀 파형 편집기 설정 적용: {dlg.summary_badge_text}")
+            if dlg.run_immediately_requested:
+                self.cmb_plot_view.setCurrentIndex(1)  # Switch to Time-Domain waveform view
+                self.tabs.setCurrentIndex(0)
+                self.execute_measurement()
+
+    def open_multi_channel_dialog(self) -> None:
+        """Open dedicated wide popup dialog for 1~10 SMU Node-Channel mapping & independent per-unit overrides."""
+        dlg = MultiChannelConfigDialog(
+            profile=self.driver.profile,
+            logical_channels=self.logical_channels,
+            variant_code=self._selected_variant_code(),
+            parent=self,
+        )
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            self.logical_channels = dlg.result_channels
+            self._populate_logical_channel_table_widgets()
+            ind_cnt = sum(1 for c in self.logical_channels if c.independent_override and c.enabled)
+            en_cnt = sum(1 for c in self.logical_channels if c.enabled)
+            if ind_cnt > 0:
+                self.btn_multich_popup.setText(f"🔗 다중 채널 ({en_cnt}CH / 개별 {ind_cnt}CH)")
+                self.btn_multich_popup.setStyleSheet(
+                    "background-color: #15803d; color: white; border: 1px solid #166534; font-weight: bold; padding: 5px 10px;"
+                )
+            else:
+                self.btn_multich_popup.setText(f"🔗 다중 장비·채널 설정 ({en_cnt}CH)")
+                self.btn_multich_popup.setStyleSheet(
+                    "background-color: #f0fdf4; color: #166534; border: 1px solid #86efac; font-weight: bold; padding: 5px 10px;"
+                )
+            self.status_bar.showMessage(f"다중 채널 설정 적용 완료 (활성 {en_cnt}CH, 개별 분리 설정 {ind_cnt}CH)")
+            self.spy.record("SYS", self.driver.profile.model, f"다중 채널 설정 적용 완료 (활성 {en_cnt}CH, 개별 {ind_cnt}CH)")
+
     def open_combining_wizard(self) -> None:
         dlg = OutputCombiningWizardDialog(self.driver.profile, self)
         if dlg.exec() == dlg.DialogCode.Accepted and dlg.combined_config is not None:
@@ -1919,6 +1948,13 @@ class SMUMainWindow(QMainWindow):
         self.custom_steps = self._read_waveform_table_steps()
         self.cmb_sweep_type.setCurrentText(SweepType.LIST.value)
         self.refresh_waveform_preview()
+
+    def execute_custom_waveform_on_smu(self) -> None:
+        """Apply the edited custom waveform table, switch graph to Time-Domain view, and output/measure on the SMU immediately."""
+        self._apply_waveform_table_to_recipe()
+        self.cmb_plot_view.setCurrentIndex(1)  # Switch to Time-Domain view so the output waveform is clearly visible
+        self.tabs.setCurrentIndex(0)
+        self.execute_measurement()
 
     def _build_current_recipe(self) -> SweepRecipe:
         p = self.driver.profile
