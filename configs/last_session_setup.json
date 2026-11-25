@@ -13,6 +13,8 @@
     "nplc": 0.1,
     "sense_mode": "2WIRE",
     "output_off_mode": "NORMAL",
+    "auto_zero": "OFF",
+    "source_readback": true,
     "contact_check_enabled": false
   },
   "recipe": {
@@ -21,9 +23,9 @@
     "source_func": "VOLTAGE",
     "measure_func": "CURRENT",
     "start_level": 0.0,
-    "stop_level": 1.2,
-    "points": 21,
-    "delay_s": 0.005,
+    "stop_level": 5.2,
+    "points": 55,
+    "delay_s": 0.1,
     "compliance_limit": 0.1,
     "nplc": 0.1,
     "repeat_mode": "SINGLE",
@@ -285,7 +287,7 @@
   },
   "pulse_config": {
     "bias_level": 0.0,
-    "pulse_level": 1.2,
+    "pulse_level": 5.2,
     "pulse_width_s": 0.002,
     "pulse_period_s": 0.01,
     "pulse_count": 1,

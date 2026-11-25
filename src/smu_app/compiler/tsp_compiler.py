@@ -48,7 +48,8 @@ class TSP24xxGenerator(BaseTSPCompiler):
             "GUARD": "smu.OFFMODE_GUARD",
         }
         off_const = off_map.get(cfg.output_off_mode.value, "smu.OFFMODE_NORMAL")
-        az_const = "smu.ON" if cfg.auto_zero == "ON" else "smu.OFF"
+        az_mode = (cfg.auto_zero or "ON").upper()
+        az_const = "smu.ON" if az_mode == "ON" else "smu.OFF"
         rb_const = "smu.ON" if cfg.source_readback else "smu.OFF"
         hc_const = "smu.ON" if cfg.high_capacitance else "smu.OFF"
 
@@ -76,6 +77,8 @@ class TSP24xxGenerator(BaseTSPCompiler):
             f"{pfx}.measure.nplc = {max(profile.min_nplc, min(profile.max_nplc, cfg.nplc)):.4g}",
             f"{pfx}.measure.autozero.enable = {az_const}",
         ])
+        if az_mode == "ONCE":
+            cmds.append(f"{pfx}.measure.autozero.once()")
         if profile.has_breakdown_protection and cfg.breakdown_protection_enabled:
             cmds.append(f"{pfx}.source.protect.breakdown = smu.ON")
         return cmds

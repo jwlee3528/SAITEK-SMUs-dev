@@ -369,6 +369,8 @@ class DataExporter:
             "repeat_mode (반복 출력 모드)": f"{rc.repeat_mode.value} (Count={rc.repeat_count})",
             "compliance_limit (제한값 A/V)": rc.compliance_limit,
             "nplc (적분 시간 PLC)": rc.nplc,
+            "auto_zero (오토제로)": cc.auto_zero,
+            "source_readback (소스 리드백)": cc.source_readback,
             "high_cap (고용량 부하 모드)": cc.high_capacitance,
             "acquisition_mode (버퍼 수집 방식)": rc.acquisition_mode.value,
         }

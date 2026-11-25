@@ -302,6 +302,72 @@ class TestUX9Upgrades(unittest.TestCase):
         finally:
             SetupPersistenceManager.set_saved_export_dir(orig_dir)
 
+    def test_req12_autozero_and_source_readback_compiler_ui_and_persistence(self) -> None:
+        from smu_app.compiler.tsp_compiler import TSP24xxGenerator, TSP26xxGenerator
+        from smu_app.core.models import ChannelConfig, LogicalChannel
+        from smu_app.core.profiles import ProfileRegistry
+
+        reg = ProfileRegistry()
+        p2450 = reg.get("2450")
+        p2600 = reg.get("2600B")
+
+        # 1. Verify TSP24xxGenerator emits autozero.once() and readback=OFF properly
+        cfg_once = ChannelConfig(
+            logical_channel=LogicalChannel(1, "smu"),
+            auto_zero="ONCE",
+            source_readback=False,
+        )
+        cmds_24 = TSP24xxGenerator().compile_channel_setup(cfg_once, p2450)
+        self.assertIn("smu.measure.autozero.enable = smu.OFF", cmds_24)
+        self.assertIn("smu.measure.autozero.once()", cmds_24)
+        self.assertIn("smu.source.readback = smu.OFF", cmds_24)
+
+        # 2. Verify TSP26xxGenerator emits AUTOZERO_ONCE
+        cfg_26 = ChannelConfig(
+            logical_channel=LogicalChannel(1, "smua"),
+            auto_zero="ONCE",
+            source_readback=False,
+        )
+        cmds_26 = TSP26xxGenerator().compile_channel_setup(cfg_26, p2600)
+        self.assertIn("smua.measure.autozero = smua.AUTOZERO_ONCE", cmds_26)
+
+        # 3. Verify GUI controls, ChannelConfig propagation, and Setup save/load roundtrip
+        with tempfile.TemporaryDirectory() as tmpdir:
+            setup_file = Path(tmpdir) / "az_rb_setup.json"
+            win = SMUMainWindow(show_startup_wizard=False, prefer_simulator=True)
+            win.suppress_range_popup = True
+            win.cmb_auto_zero.setCurrentText("ONCE")
+            win.chk_source_readback.setChecked(False)
+            win.execute_measurement()
+            assert win.last_result is not None
+            self.assertEqual(win.last_result.channel_config.auto_zero, "ONCE")
+            self.assertFalse(win.last_result.channel_config.source_readback)
+
+            win.save_setup_to_path(setup_file, silent=True)
+            win.cmb_auto_zero.setCurrentText("ON")
+            win.chk_source_readback.setChecked(True)
+            win.load_setup_from_path(setup_file, silent=True)
+            self.assertEqual(win.cmb_auto_zero.currentText(), "ONCE")
+            self.assertFalse(win.chk_source_readback.isChecked())
+
+            # 4. Verify measurement time estimator formula & HTML guide reflects current UI inputs
+            win.cmb_sweep_type.setCurrentText("LINEAR")
+            win.spn_points.setValue(50)
+            win.spn_delay.setValue(0.1)
+            win.spn_nplc.setValue(0.1)
+            win.cmb_auto_zero.setCurrentText("ON")
+            win.chk_source_readback.setChecked(True)
+            html_on, stats_on = win.build_measurement_time_guide_html()
+            self.assertIn("49", html_on)
+            self.assertAlmostEqual(stats_on["ideal_elapsed_s"], 4.9, places=3)
+            self.assertGreater(stats_on["est_mid_s"], 6.0)
+
+            win.cmb_auto_zero.setCurrentText("ONCE")
+            win.chk_source_readback.setChecked(False)
+            _, stats_fast = win.build_measurement_time_guide_html()
+            self.assertLess(stats_fast["est_mid_s"], stats_on["est_mid_s"])
+            self.assertLess(stats_fast["est_mid_s"], 5.5)
+
 
 if __name__ == "__main__":
     unittest.main()

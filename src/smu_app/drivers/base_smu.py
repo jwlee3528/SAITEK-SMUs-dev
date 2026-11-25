@@ -157,8 +157,15 @@ class BaseTSPDriver:
                 )
                 self.transport.write(f":SOUR:FUNC {s_scpi}")
                 self.transport.write(lim_cmd)
+                self.transport.write(f":SOUR:{s_scpi}:READ:BACK {'ON' if cfg.source_readback else 'OFF'}")
                 self.transport.write(f":SENS:FUNC '{m_scpi}'")
                 self.transport.write(f":SENS:{m_scpi}:NPLC {cfg.nplc:.4g}")
+                az_scpi = (cfg.auto_zero or "ON").upper()
+                if az_scpi == "ONCE":
+                    self.transport.write(":SENS:AZER OFF")
+                    self.transport.write(":SENS:AZER:ONCE")
+                else:
+                    self.transport.write(f":SENS:AZER {'ON' if az_scpi == 'ON' else 'OFF'}")
                 self.transport.write(f":SOUR:{s_scpi} {cfg.source_level:.6g}")
                 self.transport.write(":OUTP ON")
                 try:
@@ -342,9 +349,16 @@ class BaseTSPDriver:
         self.transport.write(":TRAC:CLE 'defbuffer1'")
         self.transport.write(f":SOUR:FUNC {s_scpi}")
         self.transport.write(lim_cmd)
+        self.transport.write(f":SOUR:{s_scpi}:READ:BACK {'ON' if cfg.source_readback else 'OFF'}")
         self.transport.write(f":SENS:FUNC '{m_scpi}'")
         self.transport.write(f":SENS:{m_scpi}:RSEN {rsen}")
         self.transport.write(f":SENS:{m_scpi}:NPLC {cfg.nplc:.4g}")
+        az_scpi = (cfg.auto_zero or "ON").upper()
+        if az_scpi == "ONCE":
+            self.transport.write(":SENS:AZER OFF")
+            self.transport.write(":SENS:AZER:ONCE")
+        else:
+            self.transport.write(f":SENS:AZER {'ON' if az_scpi == 'ON' else 'OFF'}")
 
         levels = recipe.generate_levels()
         self.transport.write(":OUTP ON")

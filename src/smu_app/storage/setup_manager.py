@@ -169,6 +169,8 @@ class SetupPersistenceManager:
                 "nplc": channel_config.nplc,
                 "sense_mode": channel_config.sense_mode.value,
                 "output_off_mode": channel_config.output_off_mode.value,
+                "auto_zero": channel_config.auto_zero,
+                "source_readback": channel_config.source_readback,
                 "contact_check_enabled": channel_config.contact_check_enabled,
             },
             "recipe": {
@@ -243,6 +245,8 @@ class SetupPersistenceManager:
             nplc=float(cc_raw.get("nplc", 1.0)),
             sense_mode=SenseMode(cc_raw.get("sense_mode", "2WIRE")),
             output_off_mode=OutputOffMode(cc_raw.get("output_off_mode", "NORMAL")),
+            auto_zero=str(cc_raw.get("auto_zero", "ON")),
+            source_readback=bool(cc_raw.get("source_readback", True)),
             contact_check_enabled=bool(cc_raw.get("contact_check_enabled", False)),
         )
 

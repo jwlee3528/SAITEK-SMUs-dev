@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -40,6 +41,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -671,7 +673,27 @@ class SMUMainWindow(QMainWindow):
         for om in OutputOffMode:
             self.cmb_offmode.addItem(om.value)
         form_saf.addRow("Output-Off:", self.cmb_offmode)
+
+        self.cmb_auto_zero = QComboBox()
+        self.cmb_auto_zero.addItems(["ON", "ONCE", "OFF"])
+        self.cmb_auto_zero.setCurrentText("ON")
+        self.cmb_auto_zero.setToolTip(
+            "AutoZero (자동 영점 보정)\n"
+            "• ON: 매 포인트마다 영점 보정 (최고 정밀도, 스텝당 ~15~30ms 추가)\n"
+            "• ONCE: 측정 시작 전 1회만 보정 (속도와 정밀도 균형 추천)\n"
+            "• OFF: 영점 보정 비활성화 (최고 속도, 장시간 측정 시 미세 드리프트 가능)"
+        )
+        form_saf.addRow("AutoZero:", self.cmb_auto_zero)
         c1_layout.addLayout(form_saf)
+
+        self.chk_source_readback = QCheckBox("Source Readback (실제 인가값 재측정)")
+        self.chk_source_readback.setChecked(True)
+        self.chk_source_readback.setToolTip(
+            "Source Readback (24xx 시리즈 전용)\n"
+            "• 체크(ON): 매 스텝마다 실제 출력된 전압/전류를 재측정 (정확도 향상, 스텝당 ~5~10ms 추가)\n"
+            "• 해제(OFF): 설정한 목표 레벨을 그대로 기록하여 스윕 속도 대폭 단축"
+        )
+        c1_layout.addWidget(self.chk_source_readback)
 
         self.chk_contact = QCheckBox("4-Wire Contact Check 사전 검사")
         c1_layout.addWidget(self.chk_contact)
@@ -753,6 +775,7 @@ class SMUMainWindow(QMainWindow):
 
         # Quick Export Action Row at Bottom of Column 2
         exp_mini = QHBoxLayout()
+        exp_mini.setSpacing(3)
         btn_csv_q = QPushButton("📄 CSV")
         btn_csv_q.clicked.connect(self.export_csv)
         btn_pq_q = QPushButton("⚡ Parquet/DB")
@@ -762,6 +785,7 @@ class SMUMainWindow(QMainWindow):
         btn_hist_q = QPushButton("📚 이력비교")
         btn_hist_q.clicked.connect(self.export_history_comparison)
         for b in (btn_csv_q, btn_pq_q, btn_img_q, btn_hist_q):
+            b.setStyleSheet("padding: 4px 4px; font-size: 8.3pt;")
             exp_mini.addWidget(b)
         col2_outer.addLayout(exp_mini)
 
@@ -819,6 +843,14 @@ class SMUMainWindow(QMainWindow):
         self.lbl_sample_count = QLabel("누적 샘플: 0 pts")
         self.lbl_sample_count.setStyleSheet("color: #334155; font-weight: bold; padding-left: 8px;")
         st_row.addWidget(self.lbl_sample_count)
+
+        self.btn_time_guide = QPushButton("⏱ 예상 시간 공식")
+        self.btn_time_guide.setToolTip("현재 입력된 설정값 기준으로 측정 완료 시간(Elapsed)이 어떻게 계산되는지 공식과 함께 쉽게 설명합니다.")
+        self.btn_time_guide.setStyleSheet(
+            "background-color: #eef2ff; color: #3730a3; border: 1px solid #a5b4fc; font-weight: bold; padding: 3px 8px; border-radius: 4px;"
+        )
+        self.btn_time_guide.clicked.connect(self.open_measurement_time_guide_dialog)
+        st_row.addWidget(self.btn_time_guide)
 
         st_row.addStretch(1)
 
@@ -1043,14 +1075,15 @@ class SMUMainWindow(QMainWindow):
         c3_layout.addWidget(self.tabs, 1)
         col_splitter.addWidget(col3_group)
 
-        # GUI ver0.1 Layout Optimization:
-        # Shrink Column 1 (Input: 265px) and Column 2 (Live KPI: 225px) and maximize Column 3 (Graph & Measurement Data: 1120px)
-        col1_group.setMinimumWidth(240)
-        col2_group.setMinimumWidth(205)
+        # Compact-fit 3-Column Width Allocation:
+        # Ensure Column 1 (Input: 315px) & Column 2 (Live KPI: 290px) display all labels/buttons cleanly without clipping,
+        # while giving Column 3 (Graph & Data Table: 1005px) maximum workspace.
+        col1_group.setMinimumWidth(295)
+        col2_group.setMinimumWidth(275)
         col_splitter.setStretchFactor(0, 0)
         col_splitter.setStretchFactor(1, 0)
         col_splitter.setStretchFactor(2, 1)
-        col_splitter.setSizes([265, 225, 1120])
+        col_splitter.setSizes([315, 290, 1005])
         main_vsplit.addWidget(col_splitter)
 
         # ---------------------------------------------------------------------
@@ -1219,6 +1252,8 @@ class SMUMainWindow(QMainWindow):
         self.spn_repeat_count.setValue(1)
         self.spn_compliance.setValue(0.1)
         self.spn_nplc.setValue(0.1)
+        self.cmb_auto_zero.setCurrentText("ON")
+        self.chk_source_readback.setChecked(True)
         self.custom_steps = WaveformBuilder.build_staircase_wave(0.0, 1.2, 13, 0.005, dual_return=True)
         self._populate_waveform_table()
         self._reset_waveform_badge_to_default()
@@ -1302,6 +1337,183 @@ class SMUMainWindow(QMainWindow):
         self.detached_windows.append(win)
         win.show()
         return win
+
+    def build_measurement_time_guide_html(self) -> tuple[str, dict[str, float]]:
+        """Calculate expected Elapsed measurement time from current UI settings and return a beginner-friendly HTML guide."""
+        p = self.driver.profile
+        recipe = self._build_current_recipe()
+        auto_zero = self.cmb_auto_zero.currentText()
+        source_readback = self.chk_source_readback.isChecked()
+
+        levels = recipe.generate_levels()
+        cycle_pts = max(1, len(levels))
+        is_continuous = recipe.repeat_mode == RepeatMode.CONTINUOUS
+        repeat_n = max(1, recipe.repeat_count) if recipe.repeat_mode == RepeatMode.FINITE else 1
+        total_pts = cycle_pts * repeat_n
+        intervals = max(0, total_pts - 1)  # Step 1 = 0.0000 s 기준점이므로 총 N-1 구간
+
+        if recipe.sweep_type == SweepType.LIST and recipe.custom_steps:
+            step_durs = [max(0.0, s.duration_s) for s in recipe.custom_steps]
+            avg_delay_s = sum(step_durs) / max(1, len(step_durs))
+            total_delay_s = intervals * avg_delay_s
+        else:
+            avg_delay_s = max(0.0, recipe.delay_s)
+            total_delay_s = intervals * avg_delay_s
+
+        # 60Hz 전원 기준 ADC 적분 시간 (1 NPLC = 1/60 s ≈ 16.67 ms)
+        base_adc_s = max(0.0001, recipe.nplc) / 60.0
+        az_mult = 3.0 if auto_zero == "ON" else 1.0
+        t_adc_per_pt = base_adc_s * az_mult
+
+        # 장비 내부 처리 시간 (AutoZero 보정 / Source Readback / AutoRange·소스 전환)
+        t_az_extra = 0.015 if auto_zero == "ON" else 0.0
+        t_rb_extra = 0.010 if (source_readback and p.is_24xx) else 0.0
+        t_sys_base = 0.003
+        t_overhead_per_pt = t_az_extra + t_rb_extra + t_sys_base
+
+        t_step_total = avg_delay_s + t_adc_per_pt + t_overhead_per_pt
+        ideal_elapsed_s = total_delay_s
+        est_low_s = intervals * (avg_delay_s + t_adc_per_pt + t_overhead_per_pt * 0.75)
+        est_mid_s = intervals * t_step_total
+        est_high_s = intervals * (avg_delay_s + t_adc_per_pt + t_overhead_per_pt * 1.25)
+
+        actual_block = ""
+        if self.last_result and self.last_result.points:
+            actual_elapsed = self.last_result.points[-1].timestamp_s
+            actual_block = (
+                f"<div style='margin-top:6px; padding:6px 10px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:5px; color:#065f46;'>"
+                f"📌 <b>방금 측정한 실제 완료 시간 (Elapsed):</b> <b>{actual_elapsed:.4f} s</b> ({len(self.last_result.points):,} pts)"
+                f"</div>"
+            )
+
+        cont_note = (
+            "<div style='margin-top:6px; color:#b45309; font-weight:bold;'>"
+            "※ 현재 '무한 연속(CONTINUOUS)' 모드이므로 아래 계산은 1주기(1 Cycle) 기준 시간입니다.</div>"
+            if is_continuous
+            else ""
+        )
+
+        rb_label = "ON (실제 인가값 재측정)" if (source_readback and p.is_24xx) else ("OFF (설정값 그대로 기록)" if p.is_24xx else "N/A (26xx 미적용)")
+        az_desc = {
+            "ON": "ON (매 포인트마다 영점 보정 → 적분시간 ×3 + ~15ms)",
+            "ONCE": "ONCE (측정 시작 전 1회만 보정 → 빠르고 안정적)",
+            "OFF": "OFF (보정 꺼짐 → 최고 속도)",
+        }.get(auto_zero, auto_zero)
+
+        html = f"""
+        <div style="font-family:'맑은 고딕', sans-serif; font-size:9.5pt; color:#0f172a; line-height:1.55;">
+          <h3 style="margin:0 0 8px 0; color:#0b2545;">⏱ 현재 설정값 기준 예상 측정 시간 (Elapsed) 안내</h3>
+
+          <div style="background:#eff6ff; border:1.5px solid #3b82f6; border-radius:6px; padding:10px 12px; margin-bottom:10px;">
+            <div style="font-size:10.5pt; font-weight:bold; color:#1d4ed8;">
+              예상 측정 완료 시간 (Elapsed): 약 {est_low_s:.2f} s ~ {est_high_s:.2f} s &nbsp;(평균 약 {est_mid_s:.2f} s)
+            </div>
+            <div style="color:#334155; margin-top:3px;">
+              • 단순 이론 지연 합계 (스텝 지연만 계산): <b>{ideal_elapsed_s:.3f} s</b> &nbsp;|&nbsp;
+              • 포인트 1개당 예상 소요 시간: <b>{t_step_total * 1000:.1f} ms/pt</b>
+            </div>
+            {actual_block}
+            {cont_note}
+          </div>
+
+          <h4 style="margin:10px 0 4px 0; color:#1e3a8a;">1. 초보자도 바로 이해하는 측정 시간 공식</h4>
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:5px; padding:8px 10px; font-family:Consolas, '맑은 고딕';">
+            <b>총 완료 시간 (Elapsed) ≈ (총 포인트 수 − 1) × (스텝 지연 + ADC 적분 시간 + 장비 내부 처리 시간)</b>
+          </div>
+          <ul style="margin:6px 0 10px 18px; padding:0;">
+            <li><b>왜 (총 포인트 수 − 1) 인가요?</b><br>
+                첫 번째 측정점(Step 1)이 <b>0.0000 s 기준점</b>이기 때문입니다. 예를 들어 50개 포인트라면 점과 점 사이의 간격은 <b>49구간</b>이 됩니다.</li>
+            <li><b>스텝 지연 (Step Delay):</b> 전압/전류를 바꾼 뒤 회로가 안정될 때까지 기다리는 시간입니다.</li>
+            <li><b>ADC 적분 시간 (NPLC):</b> SMU가 노이즈를 줄이기 위해 신호를 읽어들이는 시간입니다. 한국 전원(60Hz) 기준 <b>1 NPLC = 16.67 ms</b>이며, <code>AutoZero = ON</code>이면 매 포인트마다 내부 영점을 다시 재므로 약 <b>3배</b>가 걸립니다.</li>
+            <li><b>장비 내부 처리 시간:</b> AutoZero 스위칭, Source Readback(실제 인가값 재측정), AutoRange(전류 범위 자동 탐색) 등에 쓰이는 하드웨어 고정 시간입니다.</li>
+          </ul>
+
+          <h4 style="margin:10px 0 4px 0; color:#1e3a8a;">2. 지금 입력하신 설정값 대입 계산표 ({p.model} / {recipe.sweep_type.value})</h4>
+          <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse:collapse; border:1px solid #cbd5e1; font-size:9pt;">
+            <tr style="background:#0b2545; color:white;">
+              <th align="left">항목</th>
+              <th align="left">현재 설정값</th>
+              <th align="right">1포인트당 시간</th>
+              <th align="right">{intervals}구간 합계</th>
+            </tr>
+            <tr style="background:#ffffff;">
+              <td><b>스텝 지연 (Delay)</b></td>
+              <td>{avg_delay_s:.5f} s</td>
+              <td align="right">{avg_delay_s * 1000:.2f} ms</td>
+              <td align="right">{total_delay_s:.3f} s</td>
+            </tr>
+            <tr style="background:#f8fafc;">
+              <td><b>ADC 적분 (NPLC)</b></td>
+              <td>{recipe.nplc:g} PLC (×{az_mult:g})</td>
+              <td align="right">{t_adc_per_pt * 1000:.2f} ms</td>
+              <td align="right">{intervals * t_adc_per_pt:.3f} s</td>
+            </tr>
+            <tr style="background:#ffffff;">
+              <td><b>AutoZero</b></td>
+              <td>{az_desc}</td>
+              <td align="right">+{t_az_extra * 1000:.1f} ms</td>
+              <td align="right">{intervals * t_az_extra:.3f} s</td>
+            </tr>
+            <tr style="background:#f8fafc;">
+              <td><b>Source Readback</b></td>
+              <td>{rb_label}</td>
+              <td align="right">+{t_rb_extra * 1000:.1f} ms</td>
+              <td align="right">{intervals * t_rb_extra:.3f} s</td>
+            </tr>
+            <tr style="background:#ffffff;">
+              <td><b>기본 범위/스위칭</b></td>
+              <td>AutoRange · 소스 전환</td>
+              <td align="right">+{t_sys_base * 1000:.1f} ms</td>
+              <td align="right">{intervals * t_sys_base:.3f} s</td>
+            </tr>
+            <tr style="background:#e0f2fe; font-weight:bold;">
+              <td colspan="2">합계 (총 {total_pts:,} pts / {intervals:,}구간 기준)</td>
+              <td align="right">{t_step_total * 1000:.2f} ms/pt</td>
+              <td align="right">약 {est_mid_s:.3f} s</td>
+            </tr>
+          </table>
+
+          <div style="margin-top:10px; padding:8px 10px; background:#fffbeb; border:1px solid #fcd34d; border-radius:5px; font-size:8.8pt;">
+            💡 <b>실전 팁:</b>
+            측정 속도를 이론치(<code>{ideal_elapsed_s:.2f} s</code>)에 가깝게 빠르게 만들고 싶다면 좌측 <b>2. 정밀도 &amp; 안전 보호</b>에서
+            <b>AutoZero = ONCE</b>, <b>Source Readback = 해제(OFF)</b>로 설정해 보세요.
+            반대로 미세 전류(nA 이하) 초정밀 측정이 필요할 때는 <b>AutoZero = ON</b>, <b>NPLC = 1.0</b> 이상을 권장합니다.
+          </div>
+        </div>
+        """
+        stats = {
+            "total_pts": float(total_pts),
+            "intervals": float(intervals),
+            "ideal_elapsed_s": ideal_elapsed_s,
+            "est_low_s": est_low_s,
+            "est_mid_s": est_mid_s,
+            "est_high_s": est_high_s,
+            "per_point_ms": t_step_total * 1000.0,
+        }
+        return html, stats
+
+    def open_measurement_time_guide_dialog(self) -> None:
+        """Open a clean modal popup explaining how Elapsed measurement time is calculated for current inputs."""
+        html, _ = self.build_measurement_time_guide_html()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⏱ 예상 측정 시간 (Elapsed) 계산기 & 공식 안내")
+        dlg.resize(650, 560)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 10)
+
+        browser = QTextBrowser(dlg)
+        browser.setHtml(html)
+        browser.setStyleSheet("background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px;")
+        layout.addWidget(browser, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_close = QPushButton("확인 (닫기)")
+        btn_close.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold; padding: 6px 18px; border-radius: 4px;")
+        btn_close.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+        dlg.exec()
 
     def clear_graph_and_table_data(self) -> None:
         self.last_result = None
@@ -1460,6 +1672,8 @@ class SMUMainWindow(QMainWindow):
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
+            auto_zero=self.cmb_auto_zero.currentText(),
+            source_readback=self.chk_source_readback.isChecked(),
             contact_check_enabled=self.chk_contact.isChecked(),
         )
         self._sync_logical_channels_from_table()
@@ -1524,6 +1738,8 @@ class SMUMainWindow(QMainWindow):
             cc: ChannelConfig = data["channel_config"]
             self.cmb_sense.setCurrentText(cc.sense_mode.value)
             self.cmb_offmode.setCurrentText(cc.output_off_mode.value)
+            self.cmb_auto_zero.setCurrentText(cc.auto_zero)
+            self.chk_source_readback.setChecked(cc.source_readback)
             self.chk_contact.setChecked(cc.contact_check_enabled)
 
             pc: PulseDigitizerConfig = data["pulse_config"]
@@ -2064,6 +2280,8 @@ class SMUMainWindow(QMainWindow):
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
+            auto_zero=self.cmb_auto_zero.currentText(),
+            source_readback=self.chk_source_readback.isChecked(),
         )
         self._set_measuring_ui_state(True, f"⏳ [{p.model}] 단일 DC ({cfg.source_level:g} {s_func.value}) 인가 및 1회 측정 진행 중")
         try:
@@ -2115,6 +2333,8 @@ class SMUMainWindow(QMainWindow):
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
+            auto_zero=self.cmb_auto_zero.currentText(),
+            source_readback=self.chk_source_readback.isChecked(),
             contact_check_enabled=self.chk_contact.isChecked(),
         )
         tot_pts = len(recipe.generate_levels()) * max(1, recipe.repeat_count if recipe.repeat_mode == RepeatMode.FINITE else 1)
