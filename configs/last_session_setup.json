@@ -3,7 +3,8 @@
   "export_dir": "F:\\02.Project\\08. SAITEK SMU SW dev\\data\\processed",
   "model": "2450",
   "variant": "2450",
-  "node_count": 1,
+  "node_count": 2,
+  "sync_mode": "MULTI_VISA_SW",
   "dut_type": "RESISTOR_1K",
   "interlock_engaged": true,
   "channel_config": {
@@ -308,13 +309,28 @@
       "channel_name": "smu",
       "role": "PARALLEL_DUT",
       "enabled": true,
+      "model_name": "2450",
       "independent_override": false,
       "override_sweep_type": "LIST",
       "override_source_func": "VOLTAGE",
       "override_start_level": 0.0,
       "override_stop_level": 1.2,
       "override_compliance": 0.1,
-      "visa_resource": ""
+      "visa_resource": "SIM::2450::INSTR"
+    },
+    {
+      "node_id": 2,
+      "channel_name": "smu",
+      "role": "PARALLEL_DUT",
+      "enabled": true,
+      "model_name": "2450",
+      "independent_override": false,
+      "override_sweep_type": "LINEAR",
+      "override_source_func": "VOLTAGE",
+      "override_start_level": 0.0,
+      "override_stop_level": 1.2,
+      "override_compliance": 0.1,
+      "visa_resource": "SIM::2450::INSTR"
     }
   ]
 }

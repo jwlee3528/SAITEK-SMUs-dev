@@ -368,6 +368,92 @@ class TestUX9Upgrades(unittest.TestCase):
             self.assertLess(stats_fast["est_mid_s"], stats_on["est_mid_s"])
             self.assertLess(stats_fast["est_mid_s"], 5.5)
 
+    def test_req13_mixed_model_mode_a_tsplink_and_mode_b_multi_visa_sw(self) -> None:
+        from smu_app.core.models import LogicalChannel, MultiUnitSyncMode
+        from smu_app.sync.cluster_manager import TSPLinkClusterManager
+        from smu_app.ui.multi_channel_dialog import MultiChannelConfigDialog
+
+        # 1. Mode A (TSP-Link < 1us): 2450 + 2461 (same 24xx family) is VALID
+        ch_2450_2461 = [
+            LogicalChannel(node_id=1, channel_name="smu", model_name="2450", enabled=True, visa_resource="SIM::2450::INSTR"),
+            LogicalChannel(node_id=2, channel_name="smu", model_name="2461", enabled=True, visa_resource="SIM::2461::INSTR"),
+        ]
+        ok_a, errs_a, notes_a = TSPLinkClusterManager.validate_mixed_model_compatibility(
+            ch_2450_2461, MultiUnitSyncMode.TSPLINK_HW, master_model="2450"
+        )
+        self.assertTrue(ok_a)
+        self.assertEqual(errs_a, [])
+        self.assertTrue(any("TSP-Link" in n and "2450" in n and "2461" in n for n in notes_a))
+
+        # 2. Mode A (TSP-Link): 2450 + 2600B (cross-generation) is BLOCKED with clear guidance
+        ch_cross = [
+            LogicalChannel(node_id=1, channel_name="smu", model_name="2450", enabled=True, visa_resource="SIM::2450::INSTR"),
+            LogicalChannel(node_id=2, channel_name="smua", model_name="2600B", enabled=True, visa_resource="SIM::2600B::INSTR"),
+        ]
+        ok_cross_a, errs_cross_a, _ = TSPLinkClusterManager.validate_mixed_model_compatibility(
+            ch_cross, MultiUnitSyncMode.TSPLINK_HW, master_model="2450"
+        )
+        self.assertFalse(ok_cross_a)
+        self.assertTrue(any("방식 B" in e for e in errs_cross_a))
+
+        # 3. Mode B (Multi-VISA USB/LAN SW): 2450 + 2600B is ALLOWED & executes both units cleanly
+        ok_cross_b, _, _ = TSPLinkClusterManager.validate_mixed_model_compatibility(
+            ch_cross, MultiUnitSyncMode.MULTI_VISA_SW, master_model="2450"
+        )
+        self.assertTrue(ok_cross_b)
+
+        win = SMUMainWindow(show_startup_wizard=False, prefer_simulator=True)
+        win.suppress_range_popup = True
+        win.cmb_sweep_type.setCurrentText("LINEAR")
+        win.spn_points.setValue(11)
+        win.spn_nodes.setValue(2)
+        win.logical_channels = ch_cross
+        win.multi_sync_mode = MultiUnitSyncMode.MULTI_VISA_SW
+        win.execute_measurement()
+        assert win.last_result is not None
+        node_ids = {p.node_id for p in win.last_result.points}
+        self.assertEqual(node_ids, {1, 2})
+
+        # 4. Verify MultiChannelConfigDialog preset, Mode A/B toggle, per-node *IDN? test & Setup persistence roundtrip
+        dlg = MultiChannelConfigDialog(
+            profile=win.driver.profile,
+            logical_channels=ch_2450_2461,
+            sync_mode=MultiUnitSyncMode.TSPLINK_HW,
+            registry=win.registry,
+            available_visa_resources=["SIM::2450::INSTR", "SIM::2461::INSTR"],
+            visa_mgr=win.visa_mgr,
+        )
+        dlg._preset_2450_plus_2461()
+        self.assertEqual([c.model_name for c in dlg.result_channels], ["2450", "2461"])
+        dlg.rad_mode_b.setChecked(True)
+        self.assertEqual(dlg.result_sync_mode, MultiUnitSyncMode.MULTI_VISA_SW)
+        conn_results = dlg.test_all_connections()
+        self.assertEqual(len(conn_results), 2)
+        self.assertTrue(all(ok for _, ok, _ in conn_results))
+
+        # 5. Verify SMUConnectionWizardDialog Mode B per-node USB/LAN VISA selection & connection test
+        wiz = SMUConnectionWizardDialog(
+            visa_mgr=win.visa_mgr,
+            registry=win.registry,
+            initial_model="2450",
+            initial_nodes=2,
+            initial_sync_mode=MultiUnitSyncMode.MULTI_VISA_SW,
+            initial_node_resources=["SIM::2450::INSTR", "SIM::2461::INSTR"],
+        )
+        self.assertEqual(wiz.selected_sync_mode, MultiUnitSyncMode.MULTI_VISA_SW)
+        self.assertTrue(wiz.test_single_node_connection(1))
+        self.assertTrue(wiz.test_single_node_connection(2))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sf = Path(tmpdir) / "mixed_setup.json"
+            win.logical_channels = ch_2450_2461
+            win.multi_sync_mode = MultiUnitSyncMode.MULTI_VISA_SW
+            win.save_setup_to_path(sf, silent=True)
+            win.multi_sync_mode = MultiUnitSyncMode.TSPLINK_HW
+            win.load_setup_from_path(sf, silent=True)
+            self.assertEqual(win.multi_sync_mode, MultiUnitSyncMode.MULTI_VISA_SW)
+            self.assertEqual([c.model_name for c in win.logical_channels], ["2450", "2461"])
+
 
 if __name__ == "__main__":
     unittest.main()

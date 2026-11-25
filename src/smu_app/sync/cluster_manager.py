@@ -20,10 +20,11 @@ from smu_app.core.models import (
     ChannelConfig,
     CombiningMode,
     LogicalChannel,
+    MultiUnitSyncMode,
     OutputOffMode,
     SourceFunction,
 )
-from smu_app.core.profiles import SMUModelProfile
+from smu_app.core.profiles import ProfileRegistry, SMUModelProfile
 from smu_app.drivers.base_smu import BaseTSPDriver
 
 
@@ -83,6 +84,7 @@ class ClusterTopology:
     master_model: str
     specific_variant: str
     node_count: int = 1
+    sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW
     sync_line_arm: int = 1
     sync_line_trigger: int = 2
     sync_line_end: int = 3
@@ -122,6 +124,7 @@ class TSPLinkClusterManager:
                                 channel_name=ch_name,
                                 role=default_role.value,
                                 enabled=True,
+                                model_name=prof.model,
                             )
                         )
             return channels
@@ -134,9 +137,71 @@ class TSPLinkClusterManager:
                         channel_name=ch_name,
                         role=default_role.value,
                         enabled=True,
+                        model_name=prof.model,
                     )
                 )
         return channels
+
+    @staticmethod
+    def validate_mixed_model_compatibility(
+        channels: list[LogicalChannel],
+        sync_mode: MultiUnitSyncMode,
+        master_model: str,
+        registry: ProfileRegistry | None = None,
+    ) -> tuple[bool, list[str], list[str]]:
+        """Validate whether the selected multi-SMU model combination is compatible with Mode A (TSP-Link) or Mode B (Multi-VISA SW).
+
+        Returns:
+            (is_valid, errors, warnings_or_notes)
+        """
+        reg = registry or ProfileRegistry()
+        active = [c for c in channels if c.enabled]
+        if len(active) <= 1:
+            return True, [], []
+
+        models_used: list[str] = []
+        families: set[str] = set()
+        for c in active:
+            m = (c.model_name or master_model).strip()
+            models_used.append(m)
+            prof = reg.get(m)
+            families.add("24xx" if prof.is_24xx else "26xx")
+
+        unique_models = list(dict.fromkeys(models_used))
+        is_mixed = len(unique_models) > 1
+        errors: list[str] = []
+        notes: list[str] = []
+
+        if sync_mode == MultiUnitSyncMode.TSPLINK_HW:
+            if len(families) > 1:
+                errors.append(
+                    f"[방식 A (TSP-Link) 불가 조합] 선택한 모델({', '.join(unique_models)})에 24xx 계열과 26xx 계열이 함께 포함되어 있습니다. "
+                    "24xx와 26xx는 TSP-Link 하드웨어 세대가 달라 직접 케이블 결합이 불가하므로 '방식 B (USB/LAN 개별 연결)'를 선택해 주세요."
+                )
+                return False, errors, notes
+            if is_mixed:
+                fam_lbl = next(iter(families))
+                notes.append(
+                    f"[방식 A (TSP-Link < 1µs) 혼합 호환] 동일 {fam_lbl} 계열 혼합 구성({', '.join(unique_models)}) — "
+                    "Master 1대만 PC에 연결하고 후면 TSP-Link 케이블로 데이지체인 동기화합니다."
+                )
+            else:
+                notes.append(
+                    f"[방식 A (TSP-Link < 1µs)] {unique_models[0]} × {len(active)}CH 하드웨어 정밀 동기화 모드입니다."
+                )
+            return True, errors, notes
+
+        # Mode B: MULTI_VISA_SW — all 8 models can be freely combined!
+        if is_mixed:
+            notes.append(
+                f"[방식 B (USB/LAN 개별 연결, SW 동기화 1~20ms)] 이종 모델 혼합 구성({', '.join(unique_models)}) — "
+                "TSP-Link 케이블 없이 각 장비의 개별 VISA 리소스로 동시 제어합니다."
+            )
+        else:
+            notes.append(
+                f"[방식 B (USB/LAN 개별 연결, SW 동기화 1~20ms)] {unique_models[0]} × {len(active)}CH 개별 VISA 멀티세션으로 동작합니다."
+            )
+        return True, errors, notes
 
     def validate_and_initialize_cluster(
         self,

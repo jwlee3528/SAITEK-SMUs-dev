@@ -58,6 +58,7 @@ from smu_app.core.models import (
     LogicalChannel,
     MeasureFunction,
     MeasurementResult,
+    MultiUnitSyncMode,
     OutputOffMode,
     RepeatMode,
     SenseMode,
@@ -118,6 +119,8 @@ class MeasurementWorkerThread(QThread):
         logical_channels: list[LogicalChannel],
         combined_config: CombinedOutputConfig | None,
         pulse_config: PulseDigitizerConfig | None,
+        sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW,
+        visa_mgr: VISAConnectionManager | None = None,
     ) -> None:
         super().__init__()
         self.engine = engine
@@ -128,6 +131,8 @@ class MeasurementWorkerThread(QThread):
         self.logical_channels = list(logical_channels)
         self.combined_config = combined_config
         self.pulse_config = pulse_config
+        self.sync_mode = sync_mode
+        self.visa_mgr = visa_mgr
 
     def run(self) -> None:
         try:
@@ -139,6 +144,8 @@ class MeasurementWorkerThread(QThread):
                 logical_channels=self.logical_channels,
                 combined_config=self.combined_config,
                 pulse_config=self.pulse_config,
+                sync_mode=self.sync_mode,
+                visa_mgr=self.visa_mgr,
             )
             self.finished_ok.emit(res)
         except Exception as exc:
@@ -202,6 +209,7 @@ class SMUMainWindow(QMainWindow):
         self.single_dc_points: list = []
         self.custom_steps: list[WaveformStep] = WaveformBuilder.build_staircase_wave(0.0, 1.2, 13, 0.005, dual_return=True)
         self.logical_channels: list[LogicalChannel] = []
+        self.multi_sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW
         self.combined_config: CombinedOutputConfig | None = None
         self.last_acal_temp_c: float = 23.0
         self.detached_windows: list[DetachedGraphWindow] = []
@@ -1223,9 +1231,36 @@ class SMUMainWindow(QMainWindow):
         self.btn_toggle_log.setText("▼ 로그 표 접기" if self._log_visible else "▲ 로그 표 펼치기")
 
     def _quick_idn_check(self) -> None:
+        en_chs = [c for c in self.logical_channels if c.enabled]
+        if self.multi_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW and len(en_chs) >= 2:
+            lines: list[str] = ["[방식 B: USB/LAN 개별 다중 연결 — 전체 장비 *IDN? 응답]\n"]
+            for lch in en_chs:
+                m_name = lch.model_name or self.driver.profile.model
+                res_addr = lch.visa_resource or f"SIM::{m_name}::INSTR"
+                try:
+                    if lch.node_id == 1 and m_name == self.driver.profile.model and res_addr == self.active_resource_name:
+                        idn = self.driver.identify().strip()
+                    else:
+                        tr = self.visa_mgr.open_transport_session(res_addr, model=m_name)
+                        sub_drv = create_smu_driver(m_name, transport=tr, spy=self.spy, registry=self.registry)
+                        try:
+                            idn = sub_drv.identify().strip()
+                        finally:
+                            tr.close()
+                    lines.append(f"• Node {lch.node_id} ({m_name}) [{res_addr}]\n   ✅ {idn}")
+                except Exception as exc:
+                    lines.append(f"• Node {lch.node_id} ({m_name}) [{res_addr}]\n   ❌ 연결 실패: {exc}")
+            QMessageBox.information(self, "다중 장비 연결 상태 확인 (*IDN?)", "\n\n".join(lines))
+            return
+
         try:
             idn = self.driver.identify()
-            QMessageBox.information(self, "장비 연결 상태 확인 (*IDN?)", f"현재 연결된 장비 응답:\n\n{idn}")
+            extra = (
+                f"\n\n(방식 A TSP-Link 연결 대수: {self.spn_nodes.value()}대)"
+                if self.spn_nodes.value() > 1
+                else ""
+            )
+            QMessageBox.information(self, "장비 연결 상태 확인 (*IDN?)", f"현재 연결된 장비 응답:\n\n{idn}{extra}")
         except Exception as exc:
             QMessageBox.critical(self, "통신 오류", str(exc))
 
@@ -1269,17 +1304,24 @@ class SMUMainWindow(QMainWindow):
             registry=self.registry,
             initial_model=self.cmb_model.currentText(),
             initial_nodes=self.spn_nodes.value(),
+            initial_sync_mode=self.multi_sync_mode,
+            initial_node_resources=[c.visa_resource for c in self.logical_channels],
             parent=self,
         )
         if dlg.exec() == dlg.DialogCode.Accepted:
             self.active_resource_name = dlg.selected_resource
+            self.multi_sync_mode = dlg.selected_sync_mode
             self.last_checklist_status = [
                 {"title": c.item_spec.title, "checked": c.checkbox.isChecked()}
                 for c in dlg.step_cards
             ]
             self.cmb_model.setCurrentText(dlg.selected_model)
             self.spn_nodes.setValue(dlg.selected_nodes)
+            for lch in self.logical_channels:
+                if lch.node_id in dlg.selected_node_resources:
+                    lch.visa_resource = dlg.selected_node_resources[lch.node_id]
             self._connect_driver_to_resource(self.active_resource_name, dlg.selected_model)
+            self._refresh_multi_conn_badge()
 
     def _populate_top_visa_combo(self, model_name: str) -> None:
         if not hasattr(self, "cmb_visa_bar"):
@@ -1689,6 +1731,7 @@ class SMUMainWindow(QMainWindow):
             pulse_config=p_cfg,
             logical_channels=self.logical_channels,
             export_dir=self.exporter.output_dir,
+            sync_mode=self.multi_sync_mode.value,
         )
         if not silent:
             self.spy.record("SYS", p.model, f"Full Setup Saved -> {out}")
@@ -1756,6 +1799,10 @@ class SMUMainWindow(QMainWindow):
             if data["logical_channels"]:
                 self.logical_channels = data["logical_channels"]
                 self._populate_logical_channel_table_widgets()
+            try:
+                self.multi_sync_mode = MultiUnitSyncMode(data.get("sync_mode", "TSPLINK_HW"))
+            except Exception:
+                self.multi_sync_mode = MultiUnitSyncMode.TSPLINK_HW
 
             if data.get("export_dir"):
                 self.set_export_directory(data["export_dir"], persist=True)
@@ -1986,21 +2033,51 @@ class SMUMainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(0)
                 self.execute_measurement()
 
+    def _refresh_multi_conn_badge(self) -> None:
+        """Update top-bar connection status badge when Mode B multi-USB/LAN units are active."""
+        en_chs = [c for c in self.logical_channels if c.enabled]
+        if self.multi_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW and len(en_chs) >= 2:
+            summary = " + ".join(f"N{c.node_id}({c.model_name or self.driver.profile.model})" for c in en_chs[:4])
+            self.lbl_conn_badge.setText(f"[다중 USB/LAN {len(en_chs)}대] {summary}")
+            self.lbl_conn_badge.setStyleSheet("color: #38bdf8; font-weight: bold; border: none;")
+
     def open_multi_channel_dialog(self) -> None:
-        """Open dedicated wide popup dialog for 1~10 SMU Node-Channel mapping & independent per-unit overrides."""
+        """Open dedicated wide popup dialog for 1~10 SMU Node-Channel mapping, Mode A/B selection, and mixed models."""
+        discovered = [d.resource_name for d in self.visa_mgr.discover_instruments(include_simulators=True)]
         dlg = MultiChannelConfigDialog(
             profile=self.driver.profile,
             logical_channels=self.logical_channels,
             variant_code=self._selected_variant_code(),
+            sync_mode=self.multi_sync_mode,
+            registry=self.registry,
+            available_visa_resources=discovered,
+            visa_mgr=self.visa_mgr,
             parent=self,
         )
         if dlg.exec() == dlg.DialogCode.Accepted:
             self.logical_channels = dlg.result_channels
+            self.multi_sync_mode = dlg.result_sync_mode
+            unique_nodes = len({c.node_id for c in self.logical_channels})
+            if 1 <= unique_nodes <= 10 and self.spn_nodes.value() != unique_nodes:
+                self.spn_nodes.blockSignals(True)
+                self.spn_nodes.setValue(unique_nodes)
+                self.spn_nodes.blockSignals(False)
             self._populate_logical_channel_table_widgets()
-            ind_cnt = sum(1 for c in self.logical_channels if c.independent_override and c.enabled)
-            en_cnt = sum(1 for c in self.logical_channels if c.enabled)
-            if ind_cnt > 0:
-                self.btn_multich_popup.setText(f"🔗 다중 채널 ({en_cnt}CH / 개별 {ind_cnt}CH)")
+            self._update_sync_warning_banner()
+            self._refresh_multi_conn_badge()
+
+            en_chs = [c for c in self.logical_channels if c.enabled]
+            models = list(dict.fromkeys((c.model_name or self.driver.profile.model) for c in en_chs))
+            mode_tag = "방식A·TSP-Link" if self.multi_sync_mode == MultiUnitSyncMode.TSPLINK_HW else "방식B·USB/LAN"
+            ind_cnt = sum(1 for c in en_chs if c.independent_override)
+            en_cnt = len(en_chs)
+            if len(models) > 1:
+                self.btn_multich_popup.setText(f"🔗 {'+'.join(models[:3])} ({mode_tag})")
+                self.btn_multich_popup.setStyleSheet(
+                    "background-color: #0f766e; color: white; border: 1px solid #115e59; font-weight: bold; padding: 5px 10px;"
+                )
+            elif ind_cnt > 0 or en_cnt > 1:
+                self.btn_multich_popup.setText(f"🔗 다중 채널 ({en_cnt}CH / {mode_tag})")
                 self.btn_multich_popup.setStyleSheet(
                     "background-color: #15803d; color: white; border: 1px solid #166534; font-weight: bold; padding: 5px 10px;"
                 )
@@ -2009,8 +2086,14 @@ class SMUMainWindow(QMainWindow):
                 self.btn_multich_popup.setStyleSheet(
                     "background-color: #f0fdf4; color: #166534; border: 1px solid #86efac; font-weight: bold; padding: 5px 10px;"
                 )
-            self.status_bar.showMessage(f"다중 채널 설정 적용 완료 (활성 {en_cnt}CH, 개별 분리 설정 {ind_cnt}CH)")
-            self.spy.record("SYS", self.driver.profile.model, f"다중 채널 설정 적용 완료 (활성 {en_cnt}CH, 개별 {ind_cnt}CH)")
+            self.status_bar.showMessage(
+                f"다중 장비 설정 적용 완료: {' + '.join(models)} | {mode_tag} (활성 {en_cnt}CH, 개별 {ind_cnt}CH)"
+            )
+            self.spy.record(
+                "SYS",
+                self.driver.profile.model,
+                f"다중 장비·혼합 연결 설정 적용: {'+'.join(models)} ({mode_tag}, {en_cnt}CH)",
+            )
 
     def open_combining_wizard(self) -> None:
         dlg = OutputCombiningWizardDialog(self.driver.profile, self)
@@ -2352,6 +2435,8 @@ class SMUMainWindow(QMainWindow):
                 logical_channels=self.logical_channels,
                 combined_config=self.combined_config,
                 pulse_config=p_cfg,
+                sync_mode=self.multi_sync_mode,
+                visa_mgr=self.visa_mgr,
             )
             self._meas_worker.finished_ok.connect(self._on_measurement_succeeded)
             self._meas_worker.failed_err.connect(self._on_measurement_failed)
@@ -2367,6 +2452,8 @@ class SMUMainWindow(QMainWindow):
                 logical_channels=self.logical_channels,
                 combined_config=self.combined_config,
                 pulse_config=p_cfg,
+                sync_mode=self.multi_sync_mode,
+                visa_mgr=self.visa_mgr,
             )
         except Exception as exc:
             self._on_measurement_failed(str(exc))

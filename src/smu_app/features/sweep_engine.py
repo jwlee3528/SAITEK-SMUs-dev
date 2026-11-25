@@ -21,12 +21,15 @@ from smu_app.core.models import (
     ChannelConfig,
     LogicalChannel,
     MeasurementResult,
+    MultiUnitSyncMode,
     ReadingPoint,
     RepeatMode,
     SweepRecipe,
     SweepType,
 )
-from smu_app.drivers.base_smu import BaseTSPDriver
+from smu_app.core.profiles import ProfileRegistry
+from smu_app.core.visa_manager import VISAConnectionManager
+from smu_app.drivers.base_smu import BaseTSPDriver, create_smu_driver
 from smu_app.features.pulse_digitizer import (
     HighSpeedPulseDigitizerEngine,
     PulseDigitizerConfig,
@@ -57,6 +60,8 @@ class SweepExecutionEngine:
         combined_config: CombinedOutputConfig | None = None,
         pulse_config: PulseDigitizerConfig | None = None,
         streaming_callback: Callable[[list[ReadingPoint]], None] | None = None,
+        sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW,
+        visa_mgr: VISAConnectionManager | None = None,
     ) -> MeasurementResult:
         started_at = datetime.now()
         session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
@@ -92,6 +97,7 @@ class SweepExecutionEngine:
             node_count=node_count,
             specific_variant=specific_variant,
         )
+        topo.sync_mode = sync_mode
         if logical_channels:
             topo.logical_channels = list(logical_channels)
         warnings.extend(topo.warnings)
@@ -100,15 +106,53 @@ class SweepExecutionEngine:
         if not active_channels:
             active_channels = [cfg.logical_channel]
 
-        # 3. Emit TSP-Link 3-Sync-Line coordination script when multiple channels/nodes are active
-        levels = recipe.generate_levels()
-        sync_cmds = self.cluster.generate_tsplink_sync_script(
-            topo=topo,
-            step_count=len(levels),
-            delay_s=recipe.delay_s,
+        # 2b. Validate mixed-model compatibility (Mode A TSP-Link vs Mode B Multi-VISA SW)
+        reg = ProfileRegistry()
+        compat_ok, compat_errs, compat_notes = TSPLinkClusterManager.validate_mixed_model_compatibility(
+            channels=active_channels,
+            sync_mode=sync_mode,
+            master_model=self.driver.profile.model,
+            registry=reg,
         )
-        for sc in sync_cmds:
-            self.driver.transport.write(sc)
+        if not compat_ok:
+            raise ValueError("다중 장비 혼합 연결 호환성 오류:\n- " + "\n- ".join(compat_errs))
+        warnings.extend(compat_notes)
+
+        # 2c. Per-node SOA pre-flight check for mixed-model nodes with different voltage/current limits
+        for lch in active_channels:
+            ch_model = (lch.model_name or self.driver.profile.model).strip()
+            if ch_model != self.driver.profile.model:
+                sub_prof = reg.get(ch_model)
+                sub_start = lch.override_start_level if lch.independent_override else recipe.start_level
+                sub_stop = lch.override_stop_level if lch.independent_override else recipe.stop_level
+                sub_lim = lch.override_compliance if lch.independent_override else recipe.compliance_limit
+                sub_sfunc = lch.override_source_func if lch.independent_override else recipe.source_func.value
+                max_v = sub_prof.max_dc_voltage_v
+                max_i = sub_prof.max_dc_current_a
+                if sub_sfunc == "VOLTAGE":
+                    if max(abs(sub_start), abs(sub_stop)) > max_v:
+                        raise ValueError(
+                            f"[{lch.label} ({ch_model}) 안전 한계 초과] 설정 전압({max(abs(sub_start), abs(sub_stop)):g}V)이 "
+                            f"{ch_model} 최대 허용 전압(±{max_v:g}V)을 초과합니다."
+                        )
+                    if sub_lim > max_i:
+                        raise ValueError(
+                            f"[{lch.label} ({ch_model}) 안전 한계 초과] 설정 전류 Limit({sub_lim:g}A)이 "
+                            f"{ch_model} 최대 허용 전류(±{max_i:g}A)를 초과합니다."
+                        )
+
+        # 3. Emit TSP-Link 3-Sync-Line coordination script ONLY in Mode A (TSPLINK_HW)
+        levels = recipe.generate_levels()
+        if sync_mode == MultiUnitSyncMode.TSPLINK_HW:
+            sync_cmds = self.cluster.generate_tsplink_sync_script(
+                topo=topo,
+                step_count=len(levels),
+                delay_s=recipe.delay_s,
+            )
+            for sc in sync_cmds:
+                self.driver.transport.write(sc)
+        else:
+            topo.use_software_sync_fallback = True
 
         # 4. Check if Output Combining mode is active
         if combined_config is not None and combined_config.mode.value != "NONE":
@@ -146,6 +190,8 @@ class SweepExecutionEngine:
                 active_channels=active_channels,
                 active_node_ids=active_node_ids,
                 streaming_callback=streaming_callback,
+                sync_mode=sync_mode,
+                visa_mgr=visa_mgr,
             )
 
         # 6. If combined mode is active, run synchronized safe shutdown script
@@ -178,19 +224,82 @@ class SweepExecutionEngine:
         active_channels: list[LogicalChannel],
         active_node_ids: list[int],
         streaming_callback: Callable[[list[ReadingPoint]], None] | None,
+        sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW,
+        visa_mgr: VISAConnectionManager | None = None,
     ) -> list[ReadingPoint]:
         """Handle per-node/per-channel independent waveform & source overrides (Requirement 7),
+        Mode B Multi-VISA concurrent SW-sync execution (including mixed models like 2450+2461 or 2450+2600B),
         custom step measure masking, multi-channel simulation, and dual continuous modes.
         """
+        from concurrent.futures import ThreadPoolExecutor
         from dataclasses import replace
         from smu_app.core.models import MeasureFunction, SourceFunction, SweepType
 
         has_independent_overrides = len(active_channels) >= 2 and any(
             c.independent_override for c in active_channels
         )
+        has_mixed_models = len({(c.model_name or self.driver.profile.model) for c in active_channels}) > 1
+        use_multi_visa_sw = sync_mode == MultiUnitSyncMode.MULTI_VISA_SW and len(active_channels) >= 2
 
-        if has_independent_overrides:
+        if use_multi_visa_sw:
+            # Mode B: Execute each active channel/unit concurrently over its own VISA session (SW sync)
+            mgr = visa_mgr or VISAConnectionManager(spy=self.driver.spy)
+            reg = ProfileRegistry()
+
+            def _run_single_unit(lch: LogicalChannel) -> list[ReadingPoint]:
+                ch_model = (lch.model_name or self.driver.profile.model).strip()
+                if lch.independent_override:
+                    s_func = SourceFunction(lch.override_source_func)
+                    m_func = MeasureFunction.CURRENT if s_func == SourceFunction.VOLTAGE else MeasureFunction.VOLTAGE
+                    ch_cfg = replace(
+                        cfg,
+                        logical_channel=LogicalChannel(node_id=1, channel_name=lch.channel_name, model_name=ch_model),
+                        source_func=s_func,
+                        measure_func=m_func,
+                        compliance_limit=lch.override_compliance,
+                    )
+                    ch_recipe = replace(
+                        recipe,
+                        sweep_type=SweepType(lch.override_sweep_type),
+                        source_func=s_func,
+                        measure_func=m_func,
+                        start_level=lch.override_start_level,
+                        stop_level=lch.override_stop_level,
+                        compliance_limit=lch.override_compliance,
+                    )
+                else:
+                    ch_cfg = replace(
+                        cfg,
+                        logical_channel=LogicalChannel(node_id=1, channel_name=lch.channel_name, model_name=ch_model),
+                    )
+                    ch_recipe = recipe
+
+                # Reuse master driver for Node 1 when model matches; otherwise open dedicated session
+                if lch.node_id == 1 and ch_model == self.driver.profile.model and (
+                    not lch.visa_resource or lch.visa_resource.startswith("SIM::") == self.driver.is_simulated
+                ):
+                    pts = self.driver.execute_sweep(cfg=ch_cfg, recipe=ch_recipe, node_ids=[1])
+                else:
+                    res_addr = lch.visa_resource or f"SIM::{ch_model}::INSTR"
+                    transport = mgr.open_transport_session(res_addr, model=ch_model)
+                    sub_drv = create_smu_driver(ch_model, transport=transport, spy=self.driver.spy, registry=reg)
+                    try:
+                        pts = sub_drv.execute_sweep(cfg=ch_cfg, recipe=ch_recipe, node_ids=[1])
+                    finally:
+                        transport.close()
+                for p in pts:
+                    p.node_id = lch.node_id
+                    p.channel = lch.channel_name
+                return pts
+
             combined_points: list[ReadingPoint] = []
+            with ThreadPoolExecutor(max_workers=min(len(active_channels), 10)) as pool:
+                futures = [pool.submit(_run_single_unit, lch) for lch in active_channels]
+                for fut in futures:
+                    combined_points.extend(fut.result())
+            raw_points = combined_points
+        elif has_independent_overrides or has_mixed_models:
+            combined_points = []
             for lch in active_channels:
                 if lch.independent_override:
                     s_func = SourceFunction(lch.override_source_func)

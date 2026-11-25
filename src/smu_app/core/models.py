@@ -67,14 +67,23 @@ class CombiningMode(str, Enum):
     SERIES_VOLTAGE = "SERIES_VOLTAGE"
 
 
+class MultiUnitSyncMode(str, Enum):
+    """Multi-SMU physical connection & synchronization mode (Mode A vs Mode B)."""
+
+    TSPLINK_HW = "TSPLINK_HW"        # 방식 A: TSP-Link 케이블 하드웨어 동기화 (< 1 us, 같은 계열 혼합 가능)
+    MULTI_VISA_SW = "MULTI_VISA_SW"  # 방식 B: USB/LAN 개별 연결 SW 멀티세션 동기화 (1~20 ms, 전 모델 자유 혼합)
+
+
 @dataclass
 class LogicalChannel:
-    """Phase 2 Node-Channel logical abstraction (supports 1~10 nodes, 1/2/4-CH models, and Requirement 7 per-node independent waveform/source overrides)."""
+    """Phase 2 Node-Channel logical abstraction (supports 1~10 nodes, 1/2/4-CH models, mixed models, and per-node overrides)."""
 
     node_id: int = 1
     channel_name: str = "smu"  # "smu" for 24xx, "smua"/"smub" for 26xx
     role: str = "PRIMARY"      # e.g. "PRIMARY", "PARALLEL_DUT", "FET_GATE", "FET_DRAIN", "FET_SOURCE"
     enabled: bool = True
+    # Mixed-model support (e.g. Node 1 = "2450", Node 2 = "2461"). Empty string inherits Master model.
+    model_name: str = ""
     # Requirement 7: Independent per-node/per-channel waveform & source function override when nodes >= 2
     independent_override: bool = False
     override_sweep_type: str = "LINEAR"       # SweepType value

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from smu_app.core.models import MultiUnitSyncMode
 from smu_app.core.profiles import ProfileRegistry, SMUModelProfile
 from smu_app.core.visa_manager import VISAConnectionManager
 from smu_app.drivers.base_smu import BaseTSPDriver, create_smu_driver
@@ -234,6 +235,8 @@ class SMUConnectionWizardDialog(QDialog):
         registry: ProfileRegistry,
         initial_model: str = "2450",
         initial_nodes: int = 1,
+        initial_sync_mode: MultiUnitSyncMode = MultiUnitSyncMode.TSPLINK_HW,
+        initial_node_resources: list[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -241,7 +244,12 @@ class SMUConnectionWizardDialog(QDialog):
         self.registry = registry
         self.selected_model = initial_model
         self.selected_nodes = initial_nodes
+        self.selected_sync_mode: MultiUnitSyncMode = initial_sync_mode
         self.selected_resource = f"SIM::{initial_model}::INSTR"
+        self.selected_node_resources: dict[int, str] = {
+            idx + 1: res for idx, res in enumerate(initial_node_resources or []) if res
+        }
+        self._discovered_resources: list[str] = []
         self.driver: BaseTSPDriver = create_smu_driver(initial_model, registry=registry)
         self.step_cards: list[ChecklistStepCard] = []
 
@@ -297,6 +305,15 @@ class SMUConnectionWizardDialog(QDialog):
         self.spn_nodes.setValue(self.selected_nodes)
         self.spn_nodes.valueChanged.connect(self._on_model_or_nodes_changed)
         sel_row.addWidget(self.spn_nodes)
+
+        sel_row.addWidget(QLabel("<b>다중 연결 방식:</b>"))
+        self.cmb_sync_mode = QComboBox()
+        self.cmb_sync_mode.addItem("방식 A: TSP-Link (<1µs)", MultiUnitSyncMode.TSPLINK_HW.value)
+        self.cmb_sync_mode.addItem("방식 B: USB/LAN 개별 (1~20ms)", MultiUnitSyncMode.MULTI_VISA_SW.value)
+        if self.selected_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW:
+            self.cmb_sync_mode.setCurrentIndex(1)
+        self.cmb_sync_mode.currentIndexChanged.connect(self._on_sync_mode_changed)
+        sel_row.addWidget(self.cmb_sync_mode)
 
         sel_row.addWidget(QLabel("<b>Master VISA 리소스:</b>"))
         self.cmb_resource = QComboBox()
@@ -361,6 +378,7 @@ class SMUConnectionWizardDialog(QDialog):
 
     def _refresh_resources(self) -> None:
         discovered = self.visa_mgr.discover_instruments(include_simulators=True)
+        self._discovered_resources = [inst.resource_name for inst in discovered]
         self.cmb_resource.blockSignals(True)
         self.cmb_resource.clear()
         hw_idx = -1
@@ -372,6 +390,11 @@ class SMUConnectionWizardDialog(QDialog):
         if hw_idx >= 0:
             self.cmb_resource.setCurrentIndex(hw_idx)
         self.cmb_resource.blockSignals(False)
+
+    def _on_sync_mode_changed(self, *_) -> None:
+        val = self.cmb_sync_mode.currentData() or MultiUnitSyncMode.TSPLINK_HW.value
+        self.selected_sync_mode = MultiUnitSyncMode(val)
+        self._rebuild_node_test_table()
 
     def _open_selected_driver(self) -> None:
         res_name = self.cmb_resource.currentData() or self.cmb_resource.currentText().split()[0].strip()
@@ -408,18 +431,43 @@ class SMUConnectionWizardDialog(QDialog):
     def _rebuild_node_test_table(self) -> None:
         n_cnt = self.spn_nodes.value()
         p = self.driver.profile
+        is_mode_b = self.selected_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW
         self.tbl_nodes.setRowCount(n_cnt)
         for idx in range(n_cnt):
             node_num = idx + 1
-            role_txt = "Master (PC 직접 연결)" if node_num == 1 else f"Slave #{node_num} (TSP-Link 연동)"
-            path_txt = (
-                f"Master VISA ({p.channel_names[0]})"
-                if node_num == 1
-                else f"TSP-Link node[{node_num}].{p.channel_names[0]}"
-            )
+            if is_mode_b:
+                role_txt = f"개별 USB/LAN #{node_num} (SW 동기화)"
+            else:
+                role_txt = "Master (PC 직접 연결)" if node_num == 1 else f"Slave #{node_num} (TSP-Link 연동)"
             self.tbl_nodes.setItem(idx, 0, QTableWidgetItem(f"Node {node_num} ({p.model})"))
             self.tbl_nodes.setItem(idx, 1, QTableWidgetItem(role_txt))
-            self.tbl_nodes.setItem(idx, 2, QTableWidgetItem(path_txt))
+
+            if is_mode_b:
+                cmb_node_res = QComboBox()
+                cmb_node_res.setEditable(True)
+                candidates = list(self._discovered_resources)
+                default_sim = f"SIM::{p.model}::INSTR"
+                if default_sim not in candidates:
+                    candidates.append(default_sim)
+                cmb_node_res.addItems(candidates)
+                chosen = self.selected_node_resources.get(
+                    node_num,
+                    self.selected_resource if node_num == 1 else (candidates[idx] if idx < len(candidates) else default_sim),
+                )
+                cmb_node_res.setCurrentText(chosen)
+                self.selected_node_resources[node_num] = chosen
+                cmb_node_res.currentTextChanged.connect(
+                    lambda text, n=node_num: self.selected_node_resources.__setitem__(n, text.strip())
+                )
+                self.tbl_nodes.setCellWidget(idx, 2, cmb_node_res)
+            else:
+                self.tbl_nodes.removeCellWidget(idx, 2)
+                path_txt = (
+                    f"Master VISA ({p.channel_names[0]})"
+                    if node_num == 1
+                    else f"TSP-Link node[{node_num}].{p.channel_names[0]}"
+                )
+                self.tbl_nodes.setItem(idx, 2, QTableWidgetItem(path_txt))
 
             st_item = QTableWidgetItem("⏳ 테스트 대기")
             st_item.setForeground(QColor("#64748B"))
@@ -442,8 +490,17 @@ class SMUConnectionWizardDialog(QDialog):
     def test_single_node_connection(self, node_num: int) -> bool:
         row = node_num - 1
         t0 = time.perf_counter()
+        is_mode_b = self.selected_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW
         try:
-            if node_num == 1:
+            if is_mode_b:
+                res_addr = self.selected_node_resources.get(node_num) or f"SIM::{self.selected_model}::INSTR"
+                transport = self.visa_mgr.open_transport_session(res_addr, model=self.selected_model)
+                sub_drv = create_smu_driver(self.selected_model, transport=transport, spy=self.visa_mgr.spy, registry=self.registry)
+                try:
+                    resp = sub_drv.identify()
+                finally:
+                    transport.close()
+            elif node_num == 1:
                 resp = self.driver.identify()
             else:
                 self.driver.transport.write(f"tsplink.initialize({self.spn_nodes.value()})")
@@ -465,7 +522,15 @@ class SMUConnectionWizardDialog(QDialog):
             return False
 
     def beep_single_node(self, node_num: int) -> None:
-        if node_num == 1:
+        if self.selected_sync_mode == MultiUnitSyncMode.MULTI_VISA_SW:
+            res_addr = self.selected_node_resources.get(node_num) or f"SIM::{self.selected_model}::INSTR"
+            transport = self.visa_mgr.open_transport_session(res_addr, model=self.selected_model)
+            sub_drv = create_smu_driver(self.selected_model, transport=transport, spy=self.visa_mgr.spy, registry=self.registry)
+            try:
+                sub_drv.identify_blink_or_beep()
+            finally:
+                transport.close()
+        elif node_num == 1:
             self.driver.identify_blink_or_beep()
         else:
             self.driver.transport.write(f"node[{node_num}].execute('beeper.beep(0.15, 2400)')")

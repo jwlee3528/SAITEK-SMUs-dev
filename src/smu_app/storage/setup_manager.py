@@ -149,6 +149,7 @@ class SetupPersistenceManager:
         pulse_config: PulseDigitizerConfig,
         logical_channels: list[LogicalChannel],
         export_dir: Path | str | None = None,
+        sync_mode: str = "TSPLINK_HW",
     ) -> Path:
         path = Path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,6 +161,7 @@ class SetupPersistenceManager:
             "model": model,
             "variant": variant,
             "node_count": int(node_count),
+            "sync_mode": str(sync_mode),
             "dut_type": dut_type,
             "interlock_engaged": bool(interlock_engaged),
             "channel_config": {
@@ -272,6 +274,7 @@ class SetupPersistenceManager:
                 channel_name=str(c["channel_name"]),
                 role=str(c.get("role", "PARALLEL_DUT")),
                 enabled=bool(c.get("enabled", True)),
+                model_name=str(c.get("model_name", raw.get("model", "2450"))),
                 independent_override=bool(c.get("independent_override", False)),
                 override_sweep_type=str(c.get("override_sweep_type", "LINEAR")),
                 override_source_func=str(c.get("override_source_func", "VOLTAGE")),
@@ -294,6 +297,7 @@ class SetupPersistenceManager:
             "model": str(raw.get("model", "2450")),
             "variant": str(raw.get("variant", "2450")),
             "node_count": int(raw.get("node_count", 1)),
+            "sync_mode": str(raw.get("sync_mode", "TSPLINK_HW")),
             "dut_type": str(raw.get("dut_type", "SILICON_DIODE")),
             "interlock_engaged": bool(raw.get("interlock_engaged", True)),
             "channel_config": ch_cfg,
