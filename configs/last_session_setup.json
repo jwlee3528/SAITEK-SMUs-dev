@@ -3,7 +3,7 @@
   "export_dir": "F:\\02.Project\\08. SAITEK SMU SW dev\\data\\processed",
   "model": "2450",
   "variant": "2450",
-  "node_count": 2,
+  "node_count": 1,
   "sync_mode": "MULTI_VISA_SW",
   "dut_type": "RESISTOR_1K",
   "interlock_engaged": true,
@@ -19,18 +19,18 @@
     "contact_check_enabled": false
   },
   "recipe": {
-    "name": "2450_linear",
-    "sweep_type": "LINEAR",
+    "name": "2450_list",
+    "sweep_type": "LIST",
     "source_func": "VOLTAGE",
     "measure_func": "CURRENT",
     "start_level": 0.0,
     "stop_level": 5.2,
-    "points": 55,
-    "delay_s": 0.1,
+    "points": 100,
+    "delay_s": 0.001,
     "compliance_limit": 0.1,
     "nplc": 0.1,
-    "repeat_mode": "SINGLE",
-    "repeat_count": 1,
+    "repeat_mode": "FINITE",
+    "repeat_count": 10,
     "end_Return_to_bias": true,
     "apply_negative_zero_fix": true,
     "custom_steps": [
@@ -283,6 +283,256 @@
         "is_pulse": false,
         "pulse_width_s": null,
         "pulse_off_time_s": null
+      },
+      {
+        "step_index": 26,
+        "duration_s": 0.005,
+        "level": 0.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 27,
+        "duration_s": 0.005,
+        "level": 0.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 28,
+        "duration_s": 0.005,
+        "level": 0.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 29,
+        "duration_s": 0.005,
+        "level": 0.3,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 30,
+        "duration_s": 0.005,
+        "level": 0.4,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 31,
+        "duration_s": 0.005,
+        "level": 0.5,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 32,
+        "duration_s": 0.005,
+        "level": 0.6,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 33,
+        "duration_s": 0.005,
+        "level": 0.7,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 34,
+        "duration_s": 0.005,
+        "level": 0.8,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 35,
+        "duration_s": 0.005,
+        "level": 0.9,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 36,
+        "duration_s": 0.005,
+        "level": 1.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 37,
+        "duration_s": 0.005,
+        "level": 1.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 38,
+        "duration_s": 0.005,
+        "level": 1.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 39,
+        "duration_s": 0.005,
+        "level": 1.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 40,
+        "duration_s": 0.005,
+        "level": 1.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 41,
+        "duration_s": 0.005,
+        "level": 0.9,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 42,
+        "duration_s": 0.005,
+        "level": 0.8,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 43,
+        "duration_s": 0.005,
+        "level": 0.7,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 44,
+        "duration_s": 0.005,
+        "level": 0.6,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 45,
+        "duration_s": 0.005,
+        "level": 0.5,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 46,
+        "duration_s": 0.005,
+        "level": 0.4,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 47,
+        "duration_s": 0.005,
+        "level": 0.3,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 48,
+        "duration_s": 0.005,
+        "level": 0.2,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 49,
+        "duration_s": 0.005,
+        "level": 0.1,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
+      },
+      {
+        "step_index": 50,
+        "duration_s": 0.005,
+        "level": 0.0,
+        "compliance_limit": 0.1,
+        "measure_enable": true,
+        "is_pulse": false,
+        "pulse_width_s": null,
+        "pulse_off_time_s": null
       }
     ]
   },
@@ -311,24 +561,10 @@
       "enabled": true,
       "model_name": "2450",
       "independent_override": false,
-      "override_sweep_type": "LIST",
-      "override_source_func": "VOLTAGE",
-      "override_start_level": 0.0,
-      "override_stop_level": 1.2,
-      "override_compliance": 0.1,
-      "visa_resource": "SIM::2450::INSTR"
-    },
-    {
-      "node_id": 2,
-      "channel_name": "smu",
-      "role": "PARALLEL_DUT",
-      "enabled": true,
-      "model_name": "2450",
-      "independent_override": false,
       "override_sweep_type": "LINEAR",
       "override_source_func": "VOLTAGE",
       "override_start_level": 0.0,
-      "override_stop_level": 1.2,
+      "override_stop_level": 5.2,
       "override_compliance": 0.1,
       "visa_resource": "SIM::2450::INSTR"
     }
