@@ -22,6 +22,7 @@ from smu_app.core.models import (
     SourceFunction,
     SweepRecipe,
     SweepType,
+    TerminalLocation,
     WaveformStep,
 )
 from smu_app.features.pulse_digitizer import PulseDigitizerConfig
@@ -170,6 +171,9 @@ class SetupPersistenceManager:
                 "compliance_limit": channel_config.compliance_limit,
                 "nplc": channel_config.nplc,
                 "sense_mode": channel_config.sense_mode.value,
+                "terminals": channel_config.terminals.value,
+                "measure_range": channel_config.measure_range,
+                "high_capacitance": channel_config.high_capacitance,
                 "output_off_mode": channel_config.output_off_mode.value,
                 "auto_zero": channel_config.auto_zero,
                 "source_readback": channel_config.source_readback,
@@ -246,9 +250,12 @@ class SetupPersistenceManager:
             compliance_limit=float(cc_raw.get("compliance_limit", 0.1)),
             nplc=float(cc_raw.get("nplc", 1.0)),
             sense_mode=SenseMode(cc_raw.get("sense_mode", "2WIRE")),
+            terminals=TerminalLocation(cc_raw.get("terminals", "FRONT")),
+            measure_range=float(cc_raw["measure_range"]) if cc_raw.get("measure_range") is not None else None,
+            high_capacitance=bool(cc_raw.get("high_capacitance", False)),
             output_off_mode=OutputOffMode(cc_raw.get("output_off_mode", "NORMAL")),
             auto_zero=str(cc_raw.get("auto_zero", "ON")),
-            source_readback=bool(cc_raw.get("source_readback", True)),
+            source_readback=bool(cc_raw.get("source_readback", False)),
             contact_check_enabled=bool(cc_raw.get("contact_check_enabled", False)),
         )
 

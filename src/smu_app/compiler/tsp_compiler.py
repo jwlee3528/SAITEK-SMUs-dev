@@ -64,10 +64,16 @@ class TSP24xxGenerator(BaseTSPCompiler):
             f"{pfx}.source.func = {s_func}",
             f"{pfx}.measure.func = {m_func}",
         ]
-        if cfg.source_func == SourceFunction.VOLTAGE and cfg.terminals.value == "FRONT":
-            cmds.append(f"{pfx}.measure.autorangelow = 1e-5")
+        if cfg.measure_range is not None and cfg.measure_range > 0:
+            cmds.extend([
+                f"{pfx}.measure.autorange = {pfx}.OFF",
+                f"{pfx}.measure.range = {cfg.measure_range:.6g}",
+            ])
+        else:
+            if cfg.source_func == SourceFunction.VOLTAGE and cfg.terminals.value == "FRONT":
+                cmds.append(f"{pfx}.measure.autorangelow = 1e-5")
+            cmds.append(f"{pfx}.measure.autorange = {pfx}.ON")
         cmds.extend([
-            f"{pfx}.measure.autorange = {pfx}.ON",
             f"{pfx}.source.{lim_attr} = {cfg.compliance_limit:.6g}",
             f"{pfx}.terminals = {term_const}",
             f"{pfx}.source.offmode = {off_const}",
@@ -151,7 +157,7 @@ class TSP26xxGenerator(BaseTSPCompiler):
         az_const = az_map.get(cfg.auto_zero, f"{ch}.AUTOZERO_AUTO")
         hc_const = f"{ch}.ENABLE" if cfg.high_capacitance else f"{ch}.DISABLE"
 
-        return [
+        cmds = [
             f"{ch}.reset()",
             f"{ch}.source.func = {s_func}",
             f"{ch}.source.offmode = {off_const}",
@@ -161,6 +167,14 @@ class TSP26xxGenerator(BaseTSPCompiler):
             f"{ch}.measure.nplc = {max(profile.min_nplc, min(profile.max_nplc, cfg.nplc)):.4g}",
             f"{ch}.measure.autozero = {az_const}",
         ]
+        if cfg.measure_range is not None and cfg.measure_range > 0:
+            rng_attr = "rangei" if cfg.source_func == SourceFunction.VOLTAGE else "rangev"
+            ar_attr = "autorangei" if cfg.source_func == SourceFunction.VOLTAGE else "autorangev"
+            cmds.extend([
+                f"{ch}.measure.{ar_attr} = {ch}.AUTORANGE_OFF",
+                f"{ch}.measure.{rng_attr} = {cfg.measure_range:.6g}",
+            ])
+        return cmds
 
     def compile_sweep(self, cfg: ChannelConfig, recipe: SweepRecipe, profile: SMUModelProfile) -> list[str]:
         ch = cfg.logical_channel.tsp_prefix

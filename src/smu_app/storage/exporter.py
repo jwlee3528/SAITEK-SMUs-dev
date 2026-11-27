@@ -566,6 +566,78 @@ class DataExporter:
             except Exception:
                 pass
 
+        # =====================================================================
+        # SHEET 6: 6_Auto_Diagnosis (15-Rule Auto-Measurement Coach Report)
+        # =====================================================================
+        ws_diag = wb.create_sheet(title="6_Auto_Diagnosis")
+        ws_diag["A1"] = f"Tektronix / Keithley {result.model} — SMU 자동 측정 코치 진단 리포트 (15대 규칙)"
+        ws_diag["A1"].font = Font(name="맑은 고딕", size=13, bold=True, color="003366")
+
+        diag = result.diagnosis_report
+        if diag is None:
+            from smu_app.analysis.auto_diagnosis import AutoDiagnosisEngine
+            from smu_app.core.profiles import ProfileRegistry
+
+            try:
+                diag = AutoDiagnosisEngine.diagnose(result, ProfileRegistry().get(result.model))
+            except Exception:
+                diag = None
+
+        warn_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+        row_d = 3
+        if diag is not None:
+            summary_line = (
+                f"정상 (전체 {diag.total_rules_checked}개 항목 통과)"
+                if diag.is_healthy
+                else f"심각 {diag.critical_count}건 / 주의 {diag.warning_count}건 감지 (전체 {diag.total_rules_checked}개 검사)"
+            )
+            ws_diag.cell(row=row_d, column=1, value="종합 진단 판정").fill = sub_fill
+            ws_diag.cell(row=row_d, column=1).font = bold_font
+            ws_diag.cell(row=row_d, column=2, value=summary_line).font = bold_font
+            row_d += 2
+
+            # Model-specific adaptive thresholds table
+            ws_diag.cell(row=row_d, column=1, value="모델 맞춤형 적용 임계값 항목").fill = header_fill
+            ws_diag.cell(row=row_d, column=1).font = header_font
+            ws_diag.cell(row=row_d, column=2, value="적용 기준값").fill = header_fill
+            ws_diag.cell(row=row_d, column=2).font = header_font
+            row_d += 1
+            for tk, tv in diag.thresholds_summary.items():
+                c1 = ws_diag.cell(row=row_d, column=1, value=str(tk))
+                c2 = ws_diag.cell(row=row_d, column=2, value=str(tv))
+                c1.fill = sub_fill
+                c1.font = bold_font
+                c2.font = reg_font
+                c1.border = thin_border
+                c2.border = thin_border
+                row_d += 1
+
+            row_d += 1
+            diag_headers = ["영역 (Category)", "진단 항목", "판정", "감지 근거 (실측 데이터)", "원인 분석", "권장 조치 (Coach Guide)"]
+            for c_i, dh in enumerate(diag_headers, start=1):
+                hc = ws_diag.cell(row=row_d, column=c_i, value=dh)
+                hc.fill = header_fill
+                hc.font = header_font
+                hc.border = thin_border
+            row_d += 1
+
+            for item in diag.items:
+                sev_val = item.severity.value
+                sev_lbl = "심각 (CRITICAL)" if sev_val == "CRITICAL" else ("주의 (WARNING)" if sev_val == "WARNING" else "정상 (OK)")
+                vals = [item.category, item.title, sev_lbl, item.evidence, item.cause, item.recommendation]
+                for c_i, val in enumerate(vals, start=1):
+                    cell = ws_diag.cell(row=row_d, column=c_i, value=str(val))
+                    cell.font = bold_font if c_i in (2, 3) else reg_font
+                    cell.border = thin_border
+                    if c_i == 3:
+                        cell.fill = fail_fill if sev_val == "CRITICAL" else (warn_fill if sev_val == "WARNING" else stat_fill)
+                row_d += 1
+        else:
+            ws_diag.cell(row=3, column=1, value="진단 데이터 없음").font = reg_font
+
+        for c_i, w in enumerate([20, 34, 18, 38, 42, 46], start=1):
+            ws_diag.column_dimensions[get_column_letter(c_i)].width = w
+
         wb.save(out_path)
         return out_path
 

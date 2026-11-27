@@ -283,6 +283,7 @@ class TestUX9Upgrades(unittest.TestCase):
                     "3_Measured_Data",
                     "4_Waveform_Trace",
                     "5_Graph_Report",
+                    "6_Auto_Diagnosis",
                 ]
                 self.assertEqual(wb.sheetnames, expected_sheets)
 

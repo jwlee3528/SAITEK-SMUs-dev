@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Callable
 import uuid
 
+from smu_app.analysis.auto_diagnosis import AutoDiagnosisEngine
 from smu_app.analysis.iv_pulse_analyzer import analyze_measurement_points
 from smu_app.core.models import (
     AcquisitionMode,
@@ -199,11 +200,11 @@ class SweepExecutionEngine:
             for sd_cmd in self.cluster.generate_safe_combined_shutdown_script(combined_config):
                 self.driver.transport.write(sd_cmd)
 
-        # 7. Run automatic device & pulse parameter extraction
+        # 7. Run automatic device & pulse parameter extraction + 15-Rule Auto-Diagnosis Coach
         metrics = analyze_measurement_points(points, recipe)
 
         completed_at = datetime.now()
-        return MeasurementResult(
+        res = MeasurementResult(
             session_id=session_id,
             model=self.driver.profile.model,
             recipe_name=recipe.name,
@@ -216,6 +217,14 @@ class SweepExecutionEngine:
             warnings=warnings,
             aborted=False,
         )
+        ilock_state = getattr(getattr(self.driver.transport, "state", None), "interlock_engaged", True)
+        res.diagnosis_report = AutoDiagnosisEngine.diagnose(
+            res,
+            self.driver.profile,
+            is_sink_mode=sink_en,
+            interlock_engaged=bool(ilock_state),
+        )
+        return res
 
     def _execute_across_channels(
         self,

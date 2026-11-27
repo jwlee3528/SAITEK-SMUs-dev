@@ -47,6 +47,7 @@ from PyQt6.QtWidgets import (
 )
 import pyqtgraph as pg
 
+from smu_app.analysis.auto_diagnosis import AutoDiagnosisEngine
 from smu_app.analysis.iv_pulse_analyzer import (
     analyze_measurement_points,
     compute_dual_cursor_metrics,
@@ -55,6 +56,8 @@ from smu_app.analysis.iv_pulse_analyzer import (
 from smu_app.core.command_spy import CommandSpy, SpyEntry
 from smu_app.core.models import (
     ChannelConfig,
+    DiagnosisItem,
+    DiagnosisReport,
     LogicalChannel,
     MeasureFunction,
     MeasurementResult,
@@ -65,6 +68,7 @@ from smu_app.core.models import (
     SourceFunction,
     SweepRecipe,
     SweepType,
+    TerminalLocation,
     WaveformStep,
 )
 from smu_app.core.profiles import ProfileRegistry
@@ -96,6 +100,7 @@ from smu_app.ui.connection_wizard import (
     open_model_manual_pdf,
 )
 from smu_app.ui.detached_graph_dialog import DetachedGraphWindow
+from smu_app.ui.diagnosis_dialog import AutoDiagnosisDialog
 from smu_app.ui.multi_channel_dialog import MultiChannelConfigDialog
 from smu_app.ui.theme import GLOBAL_STYLESHEET
 from smu_app.ui.waveform_editor_dialog import WaveformEditorDialog
@@ -191,6 +196,7 @@ class SMUMainWindow(QMainWindow):
     """Modern Tek QuickStart-Inspired Integrated SMU Control, Live Graphing & Analysis Window."""
 
     _SERIES_COLORS = ["#38bdf8", "#4ade80", "#facc15", "#f472b6", "#c084fc", "#fb923c"]
+    spy_entry_received = pyqtSignal(object)
 
     def __init__(self, show_startup_wizard: bool = False, prefer_simulator: bool = False) -> None:
         super().__init__()
@@ -242,7 +248,10 @@ class SMUMainWindow(QMainWindow):
         )
         self._geometry_locked = True
 
-        self.spy.subscribe(self._on_spy_entry)
+        # Thread-safe Qt signal bridge so background worker threads (Mode B / HW sweep)
+        # never touch QTableWidget/QBasicTimer from non-GUI threads.
+        self.spy_entry_received.connect(self._on_spy_entry, Qt.ConnectionType.AutoConnection)
+        self.spy.subscribe(self.spy_entry_received.emit)
         self._on_model_changed("2450")
         self._populate_waveform_table()
         self.refresh_waveform_preview()
@@ -267,6 +276,15 @@ class SMUMainWindow(QMainWindow):
             self.show()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._meas_timer.isActive():
+            self._meas_timer.stop()
+        if self._meas_worker is not None and self._meas_worker.isRunning():
+            self._meas_worker.quit()
+            self._meas_worker.wait(2000)
+        try:
+            self.spy_entry_received.disconnect(self._on_spy_entry)
+        except Exception:
+            pass
         try:
             self.save_setup_to_path(SetupPersistenceManager.DEFAULT_LAST_SESSION_PATH, silent=True)
         except Exception:
@@ -677,6 +695,26 @@ class SMUMainWindow(QMainWindow):
         self.cmb_sense.addItems([SenseMode.WIRE_2.value, SenseMode.WIRE_4.value])
         form_saf.addRow("배선 모드:", self.cmb_sense)
 
+        self.cmb_terminals = QComboBox()
+        self.cmb_terminals.addItems([TerminalLocation.FRONT.value, TerminalLocation.REAR.value])
+        self.cmb_terminals.setToolTip("장비 전면(FRONT) 바나나잭 또는 후면(REAR) 트라이액셜/스크류 출력 단자 선택")
+        form_saf.addRow("출력 단자:", self.cmb_terminals)
+
+        self.cmb_meas_range = QComboBox()
+        self.cmb_meas_range.addItem("AUTO (자동 레인지)", None)
+        for rng_v, rng_lbl in [
+            (1e-5, "10 µA / 10µV (고정)"),
+            (1e-4, "100 µA / 100µV (고정)"),
+            (1e-3, "1 mA / 1mV (고정)"),
+            (1e-2, "10 mA / 10mV (고정)"),
+            (0.1, "100 mA / 100mV (고정)"),
+            (1.0, "1 A / 1V (고정)"),
+            (10.0, "10 A / 10V (고정)"),
+        ]:
+            self.cmb_meas_range.addItem(rng_lbl, rng_v)
+        self.cmb_meas_range.setToolTip("AUTO(자동) 또는 고정 측정 레인지 선택 — 오토레인지 스파이크 방지 및 고속 측정 시 고정 레인지 권장")
+        form_saf.addRow("측정 레인지:", self.cmb_meas_range)
+
         self.cmb_offmode = QComboBox()
         for om in OutputOffMode:
             self.cmb_offmode.addItem(om.value)
@@ -695,13 +733,18 @@ class SMUMainWindow(QMainWindow):
         c1_layout.addLayout(form_saf)
 
         self.chk_source_readback = QCheckBox("Source Readback (실제 인가값 재측정)")
-        self.chk_source_readback.setChecked(True)
+        self.chk_source_readback.setChecked(False)
         self.chk_source_readback.setToolTip(
-            "Source Readback (24xx 시리즈 전용)\n"
-            "• 체크(ON): 매 스텝마다 실제 출력된 전압/전류를 재측정 (정확도 향상, 스텝당 ~5~10ms 추가)\n"
-            "• 해제(OFF): 설정한 목표 레벨을 그대로 기록하여 스윕 속도 대폭 단축"
+            "Source Readback (24xx 시리즈 전용 · 기본값 OFF)\n"
+            "• 해제(OFF, 기본): 설정한 목표 레벨을 그대로 기록하여 고속 스위프 안정성 확보\n"
+            "• 체크(ON, 정밀): 매 스텝마다 실제 출력값을 재측정 (단일 ADC 모델에서 약 2배 느려질 수 있음, >1% 오차 자동 진단 연계)"
         )
         c1_layout.addWidget(self.chk_source_readback)
+
+        self.chk_high_cap = QCheckBox("High-Capacitance 모드 (고용량 부하 안정화)")
+        self.chk_high_cap.setChecked(False)
+        self.chk_high_cap.setToolTip("커패시터/배터리 등 용량성 부하 연결 시 출력 발진을 방지합니다.")
+        c1_layout.addWidget(self.chk_high_cap)
 
         self.chk_contact = QCheckBox("4-Wire Contact Check 사전 검사")
         c1_layout.addWidget(self.chk_contact)
@@ -878,6 +921,27 @@ class SMUMainWindow(QMainWindow):
         self.btn_detach_graph.clicked.connect(self.open_detached_graph_window)
         st_row.addWidget(self.btn_detach_graph)
         c3_layout.addLayout(st_row)
+
+        # Row 2b: Compact 1-Line Auto-Diagnosis Coach Banner (click to open full 15-rule popup + Auto-Fix)
+        self.frm_diag_banner = QFrame()
+        self.frm_diag_banner.setStyleSheet(
+            "QFrame { background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 5px; }"
+        )
+        diag_row = QHBoxLayout(self.frm_diag_banner)
+        diag_row.setContentsMargins(8, 3, 8, 3)
+        diag_row.setSpacing(8)
+        self.lbl_diag_summary = QLabel("🩺 자동 측정 코치 대기 중 — 측정 완료 시 15대 셋업·품질 항목을 자동 진단합니다.")
+        self.lbl_diag_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_diag_summary.setStyleSheet("color: #475569; font-weight: bold; font-size: 8.6pt; border: none;")
+        diag_row.addWidget(self.lbl_diag_summary, 1)
+
+        self.btn_open_diag_popup = QPushButton("🩺 진단 상세 보기 · 자동 보정")
+        self.btn_open_diag_popup.setStyleSheet(
+            "background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; font-weight: bold; padding: 3px 10px; border-radius: 4px;"
+        )
+        self.btn_open_diag_popup.clicked.connect(self.open_diagnosis_popup)
+        diag_row.addWidget(self.btn_open_diag_popup)
+        c3_layout.addWidget(self.frm_diag_banner)
 
         # Row 3: 5 Feature Tabs inside Column 3 (Main Graph+Table Hero Tab is Tab 0)
         self.tabs = QTabWidget()
@@ -1287,8 +1351,11 @@ class SMUMainWindow(QMainWindow):
         self.spn_repeat_count.setValue(1)
         self.spn_compliance.setValue(0.1)
         self.spn_nplc.setValue(0.1)
+        self.cmb_terminals.setCurrentText(TerminalLocation.FRONT.value)
+        self.cmb_meas_range.setCurrentIndex(0)
         self.cmb_auto_zero.setCurrentText("ON")
-        self.chk_source_readback.setChecked(True)
+        self.chk_source_readback.setChecked(False)
+        self.chk_high_cap.setChecked(False)
         self.custom_steps = WaveformBuilder.build_staircase_wave(0.0, 1.2, 13, 0.005, dual_return=True)
         self._populate_waveform_table()
         self._reset_waveform_badge_to_default()
@@ -1567,6 +1634,9 @@ class SMUMainWindow(QMainWindow):
         self.lbl_live_dmm.setText("V: --- | I: --- | R: --- | P: ---")
         self.lbl_state_pill.setText("● 상태: 초기화 완료 (CLEARED)")
         self.lbl_sample_count.setText("누적 샘플: 0 pts")
+        self.lbl_diag_summary.setText("🩺 자동 측정 코치 대기 중 — 측정 완료 시 15대 셋업·품질 항목을 자동 진단합니다.")
+        self.lbl_diag_summary.setStyleSheet("color: #475569; font-weight: bold; font-size: 8.6pt; border: none;")
+        self.frm_diag_banner.setStyleSheet("QFrame { background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 5px; }")
         for card, ph in [
             (self.kpi_voltage, "--- V"),
             (self.kpi_current, "--- A"),
@@ -1713,6 +1783,9 @@ class SMUMainWindow(QMainWindow):
             compliance_limit=self.spn_compliance.value(),
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
+            terminals=TerminalLocation(self.cmb_terminals.currentText()),
+            measure_range=self.cmb_meas_range.currentData(),
+            high_capacitance=self.chk_high_cap.isChecked(),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
             auto_zero=self.cmb_auto_zero.currentText(),
             source_readback=self.chk_source_readback.isChecked(),
@@ -1780,6 +1853,9 @@ class SMUMainWindow(QMainWindow):
 
             cc: ChannelConfig = data["channel_config"]
             self.cmb_sense.setCurrentText(cc.sense_mode.value)
+            self.cmb_terminals.setCurrentText(cc.terminals.value)
+            self._set_meas_range_combo(cc.measure_range)
+            self.chk_high_cap.setChecked(cc.high_capacitance)
             self.cmb_offmode.setCurrentText(cc.output_off_mode.value)
             self.cmb_auto_zero.setCurrentText(cc.auto_zero)
             self.chk_source_readback.setChecked(cc.source_readback)
@@ -2362,6 +2438,9 @@ class SMUMainWindow(QMainWindow):
             compliance_limit=self.spn_compliance.value(),
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
+            terminals=TerminalLocation(self.cmb_terminals.currentText()),
+            measure_range=self.cmb_meas_range.currentData(),
+            high_capacitance=self.chk_high_cap.isChecked(),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
             auto_zero=self.cmb_auto_zero.currentText(),
             source_readback=self.chk_source_readback.isChecked(),
@@ -2415,6 +2494,9 @@ class SMUMainWindow(QMainWindow):
             compliance_limit=self.spn_compliance.value(),
             nplc=self.spn_nplc.value(),
             sense_mode=SenseMode(self.cmb_sense.currentText()),
+            terminals=TerminalLocation(self.cmb_terminals.currentText()),
+            measure_range=self.cmb_meas_range.currentData(),
+            high_capacitance=self.chk_high_cap.isChecked(),
             output_off_mode=OutputOffMode(self.cmb_offmode.currentText()),
             auto_zero=self.cmb_auto_zero.currentText(),
             source_readback=self.chk_source_readback.isChecked(),
@@ -2462,9 +2544,12 @@ class SMUMainWindow(QMainWindow):
 
     def _on_measurement_failed(self, err_msg: str) -> None:
         self._set_measuring_ui_state(False)
+        self.last_measurement_error = err_msg
         self.lbl_state_pill.setText("● 상태: 측정 차단 / 오류 발생")
         self.lbl_state_pill.setStyleSheet("color: #dc2626; font-weight: bold;")
-        QMessageBox.critical(self, "Pre-Flight 안전 검증 / 실행 차단", err_msg)
+        self.spy.record("ERR", self.driver.profile.model, err_msg)
+        if not self.suppress_range_popup:
+            QMessageBox.critical(self, "Pre-Flight 안전 검증 / 실행 차단", err_msg)
 
     def _on_measurement_succeeded(self, res: MeasurementResult) -> None:
         self._set_measuring_ui_state(False)
@@ -2474,6 +2559,7 @@ class SMUMainWindow(QMainWindow):
         self._populate_table(res)
         self.refresh_soa_chart()
         self._update_kpi_cards(res)
+        self._update_diagnosis_banner(res)
 
         self.lbl_state_pill.setText("● 상태: 측정 완료 / 출력 안전 OFF (DONE)")
         self.lbl_state_pill.setStyleSheet("color: #16a34a; font-weight: bold; font-size: 9pt;")
@@ -2514,6 +2600,122 @@ class SMUMainWindow(QMainWindow):
         self.kpi_pulse.set_value(f"{rt*1e6:.1f}µs / {ov:.1f}%" if rt is not None else f"Ov {ov:.1f}%")
         hits = m.get("compliance_hit_count", 0)
         self.kpi_compliance.set_value(f"TRIPPED ({hits})" if hits > 0 else "NORMAL (0)")
+
+    def _set_meas_range_combo(self, range_val: float | None) -> None:
+        if range_val is None:
+            self.cmb_meas_range.setCurrentIndex(0)
+            return
+        for i in range(1, self.cmb_meas_range.count()):
+            data_v = self.cmb_meas_range.itemData(i)
+            if data_v is not None and abs(float(data_v) - float(range_val)) <= max(1e-9, abs(float(range_val)) * 0.05):
+                self.cmb_meas_range.setCurrentIndex(i)
+                return
+        self.cmb_meas_range.addItem(f"{range_val:g} (고정)", float(range_val))
+        self.cmb_meas_range.setCurrentIndex(self.cmb_meas_range.count() - 1)
+
+    def _update_diagnosis_banner(self, res: MeasurementResult) -> None:
+        """Run or display the 15-rule Auto-Diagnosis Coach summary on the compact 1-line banner."""
+        if res.diagnosis_report is None:
+            recent_errs = [e.payload for e in self.spy.entries()[-20:] if e.direction == "ERR"]
+            res.diagnosis_report = AutoDiagnosisEngine.diagnose(
+                res,
+                self.driver.profile,
+                is_sink_mode=self.chk_sink_mode.isChecked(),
+                interlock_engaged=self.chk_interlock.isChecked(),
+                recent_error_messages=recent_errs,
+            )
+        diag: DiagnosisReport = res.diagnosis_report
+        if diag.critical_count > 0:
+            top_titles = ", ".join(it.title for it in diag.issues[:2])
+            self.lbl_diag_summary.setText(
+                f"🛑 자동 진단: 심각 {diag.critical_count}건 · 주의 {diag.warning_count}건 감지 — {top_titles}"
+            )
+            self.lbl_diag_summary.setStyleSheet("color: #991b1b; font-weight: bold; font-size: 8.6pt; border: none;")
+            self.frm_diag_banner.setStyleSheet("QFrame { background-color: #fef2f2; border: 1.5px solid #ef4444; border-radius: 5px; }")
+            self.btn_open_diag_popup.setStyleSheet(
+                "background-color: #dc2626; color: white; border: none; font-weight: bold; padding: 3px 10px; border-radius: 4px;"
+            )
+        elif diag.warning_count > 0:
+            top_titles = ", ".join(it.title for it in diag.issues[:2])
+            self.lbl_diag_summary.setText(
+                f"⚠ 자동 진단: 주의 {diag.warning_count}건 감지 — {top_titles}"
+            )
+            self.lbl_diag_summary.setStyleSheet("color: #92400e; font-weight: bold; font-size: 8.6pt; border: none;")
+            self.frm_diag_banner.setStyleSheet("QFrame { background-color: #fffbeb; border: 1.5px solid #f59e0b; border-radius: 5px; }")
+            self.btn_open_diag_popup.setStyleSheet(
+                "background-color: #d97706; color: white; border: none; font-weight: bold; padding: 3px 10px; border-radius: 4px;"
+            )
+        else:
+            self.lbl_diag_summary.setText(
+                f"✅ 자동 진단 정상 — [{diag.model}] 15대 셋업·품질 항목 모두 통과 (클릭하여 상세 보기)"
+            )
+            self.lbl_diag_summary.setStyleSheet("color: #065f46; font-weight: bold; font-size: 8.6pt; border: none;")
+            self.frm_diag_banner.setStyleSheet("QFrame { background-color: #ecfdf5; border: 1px solid #34d399; border-radius: 5px; }")
+            self.btn_open_diag_popup.setStyleSheet(
+                "background-color: #16a34a; color: white; border: none; font-weight: bold; padding: 3px 10px; border-radius: 4px;"
+            )
+
+    def apply_diagnosis_autofix(self, item: DiagnosisItem) -> str:
+        """Apply 1-click Auto-Fix recommended by the Auto-Diagnosis Coach directly to GUI inputs."""
+        act = item.fix_action_id
+        params = item.fix_params
+        msg = "권장 보정이 적용되었습니다."
+
+        if act == "RAISE_COMPLIANCE" and "compliance_limit" in params:
+            new_lim = float(params["compliance_limit"])
+            self.spn_compliance.setValue(new_lim)
+            msg = f"Compliance Limit을 {new_lim:g}(으)로 상향 적용했습니다."
+        elif act == "SET_TERMINALS" and "terminals" in params:
+            self.cmb_terminals.setCurrentText(str(params["terminals"]))
+            msg = f"출력 단자를 {params['terminals']}로 전환했습니다."
+        elif act in ("ENABLE_4WIRE", "ENABLE_2WIRE") and "sense_mode" in params:
+            self.cmb_sense.setCurrentText(str(params["sense_mode"]))
+            msg = f"배선 모드를 {params['sense_mode']}로 전환했습니다."
+        elif act == "SET_NPLC" and "nplc" in params:
+            self.spn_nplc.setValue(float(params["nplc"]))
+            msg = f"적분 시간(NPLC)을 {params['nplc']:g}로 상향 적용했습니다."
+        elif act in ("SET_FIXED_RANGE", "SET_AUTO_RANGE"):
+            self._set_meas_range_combo(params.get("measure_range"))
+            rng_lbl = "AUTO" if params.get("measure_range") is None else f"{params['measure_range']:g}"
+            msg = f"측정 레인지를 {rng_lbl}(으)로 변경했습니다."
+        elif act == "SET_AUTOZERO" and "auto_zero" in params:
+            self.cmb_auto_zero.setCurrentText(str(params["auto_zero"]))
+            msg = f"AutoZero를 {params['auto_zero']}(으)로 변경했습니다."
+        elif act == "INCREASE_DELAY" and "delay_s" in params:
+            self.spn_delay.setValue(float(params["delay_s"]))
+            msg = f"스텝 지연(Delay)을 {params['delay_s']:g}s로 증가 적용했습니다."
+        elif act == "ENABLE_HIGH_CAP":
+            self.chk_high_cap.setChecked(True)
+            msg = "High-Capacitance 모드를 활성화했습니다."
+        elif act == "OPTIMIZE_SPEED":
+            if "auto_zero" in params:
+                self.cmb_auto_zero.setCurrentText(str(params["auto_zero"]))
+            if "source_readback" in params:
+                self.chk_source_readback.setChecked(bool(params["source_readback"]))
+            msg = "고속 측정 최적화(AutoZero=ONCE, Source Readback=OFF)를 적용했습니다."
+
+        self.status_bar.showMessage(f"[자동 보정 완료] {msg}")
+        self.spy.record("SYS", self.driver.profile.model, f"자동 측정 코치 보정 적용 ({item.rule_id}): {msg}")
+        return msg
+
+    def open_diagnosis_popup(self) -> None:
+        """Open the interactive Auto-Measurement Coach popup with 15-rule results & 1-click Auto-Fix."""
+        if self.last_result is None:
+            QMessageBox.information(
+                self,
+                "SMU 자동 측정 코치",
+                "아직 완료된 측정 데이터가 없습니다.\n[▶ 측정 시작 (Run)]을 실행하면 15대 셋업·품질 항목이 자동으로 진단됩니다.",
+            )
+            return
+        if self.last_result.diagnosis_report is None:
+            self._update_diagnosis_banner(self.last_result)
+        assert self.last_result.diagnosis_report is not None
+        dlg = AutoDiagnosisDialog(
+            report=self.last_result.diagnosis_report,
+            apply_fix_callback=self.apply_diagnosis_autofix,
+            parent=self,
+        )
+        dlg.exec()
 
     def _current_plot_xy(self, pts) -> tuple[np.ndarray, np.ndarray, bool]:
         is_time = self.cmb_plot_view.currentIndex() == 1

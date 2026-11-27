@@ -265,6 +265,7 @@ class BaseTSPDriver:
         readings: list[float] = []
         sources: list[float] = []
         timestamps: list[float] = []
+        statuses: list[int] = []
         chunk = 250
         for start_i in range(1, n_pts + 1, chunk):
             end_i = min(n_pts, start_i + chunk - 1)
@@ -274,18 +275,31 @@ class BaseTSPDriver:
             readings.extend(float(x) for x in r_str.split(",") if x.strip())
             sources.extend(float(x) for x in s_str.split(",") if x.strip())
             timestamps.extend(float(x) for x in t_str.split(",") if x.strip())
+            if self.profile.is_24xx:
+                try:
+                    st_str = self.transport.query(f"printbuffer({start_i}, {end_i}, {buf_expr}.statuses)")
+                    statuses.extend(int(float(x)) for x in st_str.split(",") if x.strip())
+                except Exception:
+                    pass
 
         result: list[ReadingPoint] = []
         expected_levels = recipe.generate_levels() * max(1, recipe.repeat_count if recipe.repeat_mode.value == "FINITE" else 1)
         t0 = timestamps[0] if timestamps else 0.0
         for idx in range(min(len(readings), len(sources))):
+            cmd_lv = expected_levels[idx] if idx < len(expected_levels) else None
             raw_src = sources[idx]
-            if abs(raw_src) > 1e30 and idx < len(expected_levels):
-                raw_src = expected_levels[idx]
+            if abs(raw_src) > 1e30 and cmd_lv is not None:
+                raw_src = cmd_lv
             v_val = raw_src if recipe.source_func == SourceFunction.VOLTAGE else readings[idx]
             i_val = readings[idx] if recipe.source_func == SourceFunction.VOLTAGE else raw_src
             ts_val = (timestamps[idx] - t0) if idx < len(timestamps) else (idx * recipe.delay_s)
             r_val = (v_val / i_val) if abs(i_val) > 1e-15 else float("inf")
+            st_bits = statuses[idx] if idx < len(statuses) else 0
+            # Keithley 24xx buffer.STAT_LIMIT1/STAT_PROTECTION/STAT_QUESTIONABLE or compliance >= 99% of limit
+            meas_mag = abs(i_val) if recipe.source_func == SourceFunction.VOLTAGE else abs(v_val)
+            in_comp = bool((st_bits & 0x40) or (st_bits & 0x04)) or (
+                recipe.compliance_limit > 0 and meas_mag >= recipe.compliance_limit * 0.995
+            )
             result.append(
                 ReadingPoint(
                     index=idx + 1,
@@ -294,9 +308,12 @@ class BaseTSPDriver:
                     current_a=i_val,
                     resistance_ohm=r_val,
                     power_w=v_val * i_val,
+                    in_compliance=in_comp,
                     is_4wire=(cfg.sense_mode.value == "4WIRE"),
                     node_id=cfg.logical_channel.node_id,
                     channel=cfg.logical_channel.channel_name,
+                    status_bits=st_bits,
+                    commanded_level=cmd_lv,
                 )
             )
         return result

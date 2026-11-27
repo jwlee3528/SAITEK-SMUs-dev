@@ -123,7 +123,7 @@ class ChannelConfig:
     terminals: TerminalLocation = TerminalLocation.FRONT
     output_off_mode: OutputOffMode = OutputOffMode.NORMAL
     auto_zero: str = "ON"              # "ON", "OFF", "ONCE"
-    source_readback: bool = True
+    source_readback: bool = False      # Default OFF for high-speed single-ADC stability (2450/2460/2461/2470)
     high_capacitance: bool = False
     offset_compensated_ohms: bool = False
     filter_enabled: bool = False
@@ -214,6 +214,58 @@ class ReadingPoint:
     limit_passed: bool = True
     node_id: int = 1
     channel: str = "smu"
+    commanded_level: float | None = None  # Setpoint commanded to SMU (for Source Readback >1% error check)
+
+
+class DiagnosisSeverity(str, Enum):
+    """Severity level for Rule-based Auto-Diagnosis Coach items."""
+
+    OK = "OK"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+@dataclass
+class DiagnosisItem:
+    """Single rule-based diagnostic finding for measurement setup & data quality coaching."""
+
+    rule_id: str
+    category: str             # "1. 출력/리미트", "2. 배선/접촉", "3. 노이즈/정밀도", "4. 타이밍/동적특성"
+    title: str
+    severity: DiagnosisSeverity
+    difficulty: str           # "하", "중", "상"
+    evidence: str             # Measured numerical evidence
+    cause: str                # Root-cause explanation (setup/measurement focused)
+    recommendation: str       # Actionable Korean guide for user
+    fix_action_id: str = ""   # Optional 1-click Auto-Fix action identifier
+    fix_label: str = ""       # Button label for 1-click Auto-Fix
+    fix_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DiagnosisReport:
+    """Aggregated 15-rule Auto-Diagnosis Coach report attached to a MeasurementResult."""
+
+    model: str
+    total_rules_checked: int = 15
+    items: list[DiagnosisItem] = field(default_factory=list)
+    thresholds_summary: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def issues(self) -> list[DiagnosisItem]:
+        return [it for it in self.items if it.severity != DiagnosisSeverity.OK]
+
+    @property
+    def critical_count(self) -> int:
+        return sum(1 for it in self.items if it.severity == DiagnosisSeverity.CRITICAL)
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for it in self.items if it.severity == DiagnosisSeverity.WARNING)
+
+    @property
+    def is_healthy(self) -> bool:
+        return self.critical_count == 0 and self.warning_count == 0
 
 
 @dataclass
@@ -231,3 +283,4 @@ class MeasurementResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     aborted: bool = False
+    diagnosis_report: DiagnosisReport | None = None
